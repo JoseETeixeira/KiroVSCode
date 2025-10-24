@@ -1,0 +1,130 @@
+{
+  "name": "kiro-copilot-extension",
+  "displayName": "Kiro-Style Copilot",
+  "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
+  "version": "0.0.1",
+  "publisher": "your-publisher-name",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kiro-copilot.switchToVibeMode",
+        "title": "Kiro: Switch to Vibe Coding Mode"
+      },
+      {
+        "command": "kiro-copilot.switchToSpecMode",
+        "title": "Kiro: Switch to Spec Mode"
+      },
+      {
+        "command": "kiro-copilot.openModeSelector",
+        "title": "Kiro: Select Coding Mode"
+      },
+      {
+        "command": "kiro-copilot.startTaskFromFile",
+        "title": "Kiro: Start Task from Current File"
+      }
+    ],
+    "configuration": {
+      "title": "Kiro Copilot",
+      "properties": {
+        "kiroCopilot.mode": {
+          "type": "string",
+          "default": "vibe",
+          "enum": [
+            "vibe",
+            "spec"
+          ],
+          "enumDescriptions": [
+            "Vibe Coding - Chat first, then build. Explore ideas and iterate as you discover needs.",
+            "Spec - Plan first, then build. Create requirements and design before coding starts."
+          ],
+          "description": "Current coding mode"
+        },
+        "kiroCopilot.promptsPath": {
+          "type": "string",
+          "default": "C:\\Users\\josee\\AppData\\Roaming\\Code\\User\\prompts",
+          "description": "Path to custom prompts directory"
+        },
+        "kiroCopilot.autoDetectTasks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically detect and provide context links when tasks.md is open"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "kiro-copilot",
+          "title": "Kiro Assistant",
+          "icon": "resources/kiro-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "kiro-copilot": [
+        {
+          "id": "kiro-copilot.modeSelector",
+          "name": "Coding Mode"
+        },
+        {
+          "id": "kiro-copilot.taskContext",
+          "name": "Task Context",
+          "when": "resourceFilename == tasks.md"
+        }
+      ]
+    },
+    "chatParticipants": [
+      {
+        "id": "kiro-copilot.assistant",
+        "name": "kiro",
+        "description": "Kiro-style AI assistant with Vibe and Spec modes",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "vibe",
+            "description": "Switch to Vibe Coding mode - rapid exploration and testing"
+          },
+          {
+            "name": "spec",
+            "description": "Switch to Spec mode - plan requirements and design first"
+          },
+          {
+            "name": "task",
+            "description": "Start working on a task from tasks.md"
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.x",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "markdown-it": "^14.0.0"
+  }
+}
