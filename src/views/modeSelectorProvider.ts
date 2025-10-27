@@ -17,10 +17,22 @@ export class ModeSelectorProvider implements vscode.TreeDataProvider<ModeItem> {
 
     getChildren(element?: ModeItem): Thenable<ModeItem[]> {
         if (!element) {
-            // Root level - show current mode and available modes
+            // Root level - show current mode, setup button, and available modes
             const currentMode = this.modeManager.getCurrentMode();
 
             return Promise.resolve([
+                new ModeItem(
+                    'Setup Project',
+                    'Copy MCP server and prompt files to workspace',
+                    vscode.TreeItemCollapsibleState.None,
+                    'setup',
+                    currentMode,
+                    {
+                        command: 'kiro-copilot.setupProject',
+                        title: 'Setup Project'
+                    },
+                    new vscode.ThemeIcon('tools')
+                ),
                 new ModeItem(
                     `Current: ${currentMode === 'vibe' ? 'Vibe Coding' : 'Spec'}`,
                     '',

@@ -4,6 +4,7 @@ import { TaskContextProvider } from './views/taskContextProvider';
 import { PromptManager } from './services/promptManager';
 import { ChatParticipant } from './chat/chatParticipant';
 import { ModeManager } from './services/modeManager';
+import { SetupService } from './services/setupService';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Kiro-Style Copilot extension is now active');
@@ -11,6 +12,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Initialize services
     const modeManager = new ModeManager(context);
     const promptManager = new PromptManager(context);
+    const setupService = new SetupService(context);
 
     // Register mode selector view
     const modeSelectorProvider = new ModeSelectorProvider(modeManager);
@@ -79,18 +81,41 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('kiro-copilot.startTaskFromFile', async (taskItem) => {
-            const editor = vscode.window.activeTextEditor;
-            if (!editor) {
+            if (!taskItem) {
+                vscode.window.showWarningMessage('No task selected');
                 return;
             }
 
-            const mode = modeManager.getCurrentMode();
-            const prompt = await promptManager.getPromptForMode(mode);
+            // Build context message with task details, steering, and spec files
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                return;
+            }
 
-            // Open chat with the task and appropriate prompt
+            let contextMessage = `Execute this task:\n\n**Task:** ${taskItem.label}\n`;
+
+            if (taskItem.specFolder) {
+                contextMessage += `**Spec:** ${taskItem.specFolder}\n`;
+            }
+
+            contextMessage += `**File:** ${taskItem.filePath}\n`;
+            contextMessage += `**Line:** ${taskItem.lineNumber + 1}\n\n`;
+
+            // Add note about context
+            contextMessage += `Please read the following files for context:\n`;
+            contextMessage += `- All files in .kiro/steering/ (project guidelines)\n`;
+
+            if (taskItem.specFolder) {
+                contextMessage += `- .kiro/specs/${taskItem.specFolder}/requirements.md (requirements)\n`;
+                contextMessage += `- .kiro/specs/${taskItem.specFolder}/design.md (design)\n`;
+                contextMessage += `- .kiro/specs/${taskItem.specFolder}/tasks.md (all tasks)\n`;
+            }
+
+            contextMessage += `\nThen implement this task following the executeTask workflow.`;
+
+            // Open chat with @kiro and the context message
             await vscode.commands.executeCommand('workbench.action.chat.open', {
-                query: taskItem ? taskItem.label : 'Start task',
-                prompt: prompt
+                query: `@kiro ${contextMessage}`
             });
         })
     );
@@ -107,8 +132,68 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // Register setup project command
+    context.subscriptions.push(
+        vscode.commands.registerCommand('kiro-copilot.setupProject', async () => {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                vscode.window.showErrorMessage('No workspace folder open. Please open a workspace.');
+                return;
+            }
+
+            const workspacePath = workspaceFolder.uri.fsPath;
+
+            await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: 'Setting up Kiro',
+                    cancellable: false
+                },
+                async (progress) => {
+                    progress.report({ message: 'Checking setup status...' });
+
+                    // Setup MCP server if needed
+                    if (!setupService.isMCPServerSetup(workspacePath)) {
+                        progress.report({ message: 'Setting up MCP server...' });
+                        const mcpResult = await setupService.setupMCPServer(workspacePath);
+                        if (!mcpResult.success) {
+                            vscode.window.showErrorMessage(mcpResult.message);
+                            return;
+                        }
+                    }
+
+                    // Copy prompt files if needed
+                    if (!setupService.arePromptFilesSetup(workspacePath)) {
+                        progress.report({ message: 'Copying prompt files...' });
+                        const promptResult = await setupService.copyPromptFiles(workspacePath);
+                        if (!promptResult.success) {
+                            vscode.window.showWarningMessage(promptResult.message);
+                        }
+                    }
+
+                    // Setup MCP config
+                    progress.report({ message: 'Updating MCP configuration...' });
+                    const configResult = await setupService.setupMCPConfig(workspacePath);
+
+                    if (configResult.success) {
+                        vscode.window.showInformationMessage(
+                            '✓ Kiro setup complete! Check the terminal for installation progress. You may need to restart VS Code.',
+                            'Restart Now'
+                        ).then(selection => {
+                            if (selection === 'Restart Now') {
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                    } else {
+                        vscode.window.showErrorMessage(configResult.message);
+                    }
+                }
+            );
+        })
+    );
+
     // Register chat participant
-    const chatParticipant = new ChatParticipant(modeManager, promptManager);
+    const chatParticipant = new ChatParticipant(modeManager, promptManager, taskContextProvider, context, setupService);
     context.subscriptions.push(chatParticipant.register());
 
     // Show welcome message on first activation

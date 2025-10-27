@@ -3,9 +3,12 @@
   "displayName": "Kiro-Style Copilot",
   "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
   "version": "0.0.1",
-  "publisher": "your-publisher-name",
+  "publisher": "JosEduardoTeixeira",
   "engines": {
     "vscode": "^1.85.0"
+  },
+  "repository": {
+    "url": "https://github.com/JoseETeixeira/KiroVSCode"
   },
   "categories": [
     "AI",
@@ -49,17 +52,111 @@
             "Vibe Coding - Chat first, then build. Explore ideas and iterate as you discover needs.",
             "Spec - Plan first, then build. Create requirements and design before coding starts."
           ],
-          "description": "Current coding mode"
+          "description": "Current coding mode",
+          "scope": "window"
         },
         "kiroCopilot.promptsPath": {
           "type": "string",
-          "default": "C:\\Users\\josee\\AppData\\Roaming\\Code\\User\\prompts",
-          "description": "Path to custom prompts directory"
+          "default": "",
+          "description": "Custom path to prompts directory. Leave empty to use default locations (extension prompts → user prompts → workspace .kiro/prompts)",
+          "scope": "resource"
         },
         "kiroCopilot.autoDetectTasks": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically detect and provide context links when tasks.md is open"
+          "description": "Automatically scan workspace for tasks.md files and show them in Task Context view",
+          "scope": "window"
+        },
+        "kiroCopilot.specsDirectory": {
+          "type": "string",
+          "default": ".kiro/specs",
+          "description": "Directory where spec folders are stored (relative to workspace root)",
+          "scope": "resource"
+        },
+        "kiroCopilot.steeringDirectory": {
+          "type": "string",
+          "default": ".kiro/steering",
+          "description": "Directory where steering files are stored (relative to workspace root)",
+          "scope": "resource"
+        },
+        "kiroCopilot.taskScanDepth": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum directory depth to scan for tasks.md files",
+          "scope": "window"
+        },
+        "kiroCopilot.enableLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable detailed logging to the Output panel for debugging",
+          "scope": "window"
+        },
+        "kiroCopilot.taskStatusIcons": {
+          "type": "object",
+          "default": {
+            "pending": "circle-outline",
+            "completed": "check",
+            "failed": "error"
+          },
+          "description": "VS Code icon IDs for different task statuses",
+          "properties": {
+            "pending": {
+              "type": "string",
+              "description": "Icon for pending tasks"
+            },
+            "completed": {
+              "type": "string",
+              "description": "Icon for completed tasks"
+            },
+            "failed": {
+              "type": "string",
+              "description": "Icon for failed tasks"
+            }
+          },
+          "scope": "window"
+        },
+        "kiroCopilot.defaultLanguageModel": {
+          "type": "string",
+          "default": "copilot-gpt-4o",
+          "enum": [
+            "copilot-gpt-4o",
+            "copilot-gpt-3.5-turbo"
+          ],
+          "enumDescriptions": [
+            "GPT-4o - Most capable model for complex tasks",
+            "GPT-3.5 Turbo - Faster, good for simple tasks"
+          ],
+          "description": "Preferred language model for @kiro chat participant",
+          "scope": "window"
+        },
+        "kiroCopilot.showModeInStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show current coding mode in the status bar",
+          "scope": "window"
+        },
+        "kiroCopilot.autoRefreshTaskContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically refresh Task Context view when tasks.md files change",
+          "scope": "window"
+        },
+        "kiroCopilot.excludePatterns": {
+          "type": "array",
+          "default": [
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/.git/**",
+            "**/vendor/**"
+          ],
+          "description": "Glob patterns to exclude when scanning for tasks.md files",
+          "items": {
+            "type": "string"
+          },
+          "scope": "resource"
         }
       }
     },
@@ -80,8 +177,7 @@
         },
         {
           "id": "kiro-copilot.taskContext",
-          "name": "Task Context",
-          "when": "resourceFilename == tasks.md"
+          "name": "Task Context"
         }
       ]
     },
