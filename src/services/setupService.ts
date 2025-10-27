@@ -143,7 +143,7 @@ export class SetupService {
         const workspaceMcpPath = path.join(kiroSettingsPath, 'mcp.json');
 
         // Fallback to user-level config if workspace config fails
-        const userMcpPath = path.join(process.env.APPDATA || process.env.HOME || '', '.kiro', 'settings', 'mcp.json');
+        const userMcpPath = path.join(process.env.APPDATA || process.env.HOME || '', '.vscode', 'mcp.json');
 
         const mcpServerDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
 
