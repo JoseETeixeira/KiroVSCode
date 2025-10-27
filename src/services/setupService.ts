@@ -99,25 +99,31 @@ export class SetupService {
                 fs.mkdirSync(githubPromptsPath, { recursive: true });
             }
 
-            // Copy all prompt files to both locations
+            // Copy instruction and prompt files to their respective locations
             const promptFiles = fs.readdirSync(extensionPromptsPath);
-            let copiedCount = 0;
+            let instructionsCount = 0;
+            let promptsCount = 0;
 
             for (const file of promptFiles) {
-                if (file.endsWith('.md') || file.endsWith('.prompt.md')) {
-                    const srcPath = path.join(extensionPromptsPath, file);
-                    const destInstructions = path.join(githubInstructionsPath, file);
-                    const destPrompts = path.join(githubPromptsPath, file);
+                const srcPath = path.join(extensionPromptsPath, file);
 
-                    fs.copyFileSync(srcPath, destInstructions);
-                    fs.copyFileSync(srcPath, destPrompts);
-                    copiedCount++;
+                // Copy .instructions.md files to .github/instructions
+                if (file.endsWith('.instructions.md')) {
+                    const destPath = path.join(githubInstructionsPath, file);
+                    fs.copyFileSync(srcPath, destPath);
+                    instructionsCount++;
+                }
+                // Copy .prompt.md files to .github/prompts
+                else if (file.endsWith('.prompt.md')) {
+                    const destPath = path.join(githubPromptsPath, file);
+                    fs.copyFileSync(srcPath, destPath);
+                    promptsCount++;
                 }
             }
 
             return {
                 success: true,
-                message: `Copied ${copiedCount} prompt file(s) to .github/instructions/ and .github/prompts/`
+                message: `Copied ${instructionsCount} instruction file(s) to .github/instructions/ and ${promptsCount} prompt file(s) to .github/prompts/`
             };
 
         } catch (error) {
@@ -132,14 +138,26 @@ export class SetupService {
      * Setup MCP configuration
      */
     async setupMCPConfig(workspacePath: string): Promise<{ success: boolean; message: string }> {
-        const userMcpPath = path.join(process.env.APPDATA || process.env.HOME || '', 'Code', 'User', 'mcp.json');
+        // Try workspace-level config first
+        const kiroSettingsPath = path.join(workspacePath, '.vscode');
+        const workspaceMcpPath = path.join(kiroSettingsPath, 'mcp.json');
+
+        // Fallback to user-level config if workspace config fails
+        const userMcpPath = path.join(process.env.APPDATA || process.env.HOME || '', '.kiro', 'settings', 'mcp.json');
+
         const mcpServerDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
 
         const mcpConfig = {
             servers: {
                 kiro: {
                     command: 'node',
-                    args: [mcpServerDistPath, '--workspace', workspacePath, '--prompts', path.join(workspacePath, '.github', 'prompts')],
+                    args: [
+                        mcpServerDistPath,
+                        '--workspace',
+                        workspacePath,
+                        '--prompts',
+                        path.join(workspacePath, '.github', 'prompts')
+                    ],
                     disabled: false,
                     autoApprove: [
                         'kiro_execute_task',
@@ -152,9 +170,28 @@ export class SetupService {
         };
 
         try {
+            // Try workspace-level config first
+            let configPath = workspaceMcpPath;
+            let configDir = kiroSettingsPath;
+            let isWorkspaceLevel = true;
+
+            // Check if we can create workspace-level config
+            try {
+                if (!fs.existsSync(configDir)) {
+                    fs.mkdirSync(configDir, { recursive: true });
+                }
+            } catch (workspaceError) {
+                // If workspace-level fails, use user-level
+                console.warn('Cannot create workspace-level config, using user-level:', workspaceError);
+                configPath = userMcpPath;
+                configDir = path.dirname(userMcpPath);
+                isWorkspaceLevel = false;
+            }
+
+            // Read existing config if it exists
             let existingConfig: { servers?: Record<string, unknown> } = {};
-            if (fs.existsSync(userMcpPath)) {
-                const content = fs.readFileSync(userMcpPath, 'utf-8');
+            if (fs.existsSync(configPath)) {
+                const content = fs.readFileSync(configPath, 'utf-8');
                 existingConfig = JSON.parse(content);
             }
 
@@ -162,17 +199,18 @@ export class SetupService {
             existingConfig.servers = existingConfig.servers || {};
             existingConfig.servers.kiro = mcpConfig.servers.kiro;
 
-            // Write back
-            const dir = path.dirname(userMcpPath);
-            if (!fs.existsSync(dir)) {
-                fs.mkdirSync(dir, { recursive: true });
+            // Ensure directory exists
+            if (!fs.existsSync(configDir)) {
+                fs.mkdirSync(configDir, { recursive: true });
             }
 
-            fs.writeFileSync(userMcpPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
+            // Write config
+            fs.writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
 
+            const level = isWorkspaceLevel ? 'workspace (.kiro/settings/mcp.json)' : 'user-level';
             return {
                 success: true,
-                message: 'MCP configuration updated. You may need to restart VS Code.'
+                message: `MCP configuration updated at ${level}. You may need to restart VS Code.`
             };
 
         } catch (error) {

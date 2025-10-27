@@ -2,7 +2,7 @@
   "name": "kiro-copilot-extension",
   "displayName": "Kiro-Style Copilot",
   "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "publisher": "JosEduardoTeixeira",
   "engines": {
     "vscode": "^1.85.0"
@@ -119,13 +119,13 @@
         },
         "kiroCopilot.defaultLanguageModel": {
           "type": "string",
-          "default": "copilot-gpt-4o",
+          "default": "copilot-gpt-5",
           "enum": [
-            "copilot-gpt-4o",
+            "copilot-gpt-5",
             "copilot-gpt-3.5-turbo"
           ],
           "enumDescriptions": [
-            "GPT-4o - Most capable model for complex tasks",
+            "GPT-5 - Most capable model for complex tasks",
             "GPT-3.5 Turbo - Faster, good for simple tasks"
           ],
           "description": "Preferred language model for @kiro chat participant",
