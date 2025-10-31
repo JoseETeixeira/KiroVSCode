@@ -14,5 +14,5 @@
     "moduleResolution": "node",
     "types": ["node"]
   },
-  "exclude": ["node_modules", ".vscode-test", "mcp-server"]
+  "exclude": ["node_modules", ".vscode-test", "mcp-server", "src/webview"]
 }

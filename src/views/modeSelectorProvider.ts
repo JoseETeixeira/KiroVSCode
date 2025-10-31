@@ -1,9 +1,14 @@
-import * as vscode from 'vscode';
-import { ModeManager, CodingMode } from '../services/modeManager';
+import * as vscode from "vscode";
+import { ModeManager, CodingMode } from "../services/modeManager";
+import { getModeIcon, KiroIcons, createThemedIcon } from "../styles/kiroTheme";
 
 export class ModeSelectorProvider implements vscode.TreeDataProvider<ModeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<ModeItem | undefined | null | void> = new vscode.EventEmitter<ModeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<ModeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+    private _onDidChangeTreeData: vscode.EventEmitter<
+        ModeItem | undefined | null | void
+    > = new vscode.EventEmitter<ModeItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<
+        ModeItem | undefined | null | void
+    > = this._onDidChangeTreeData.event;
 
     constructor(private modeManager: ModeManager) {}
 
@@ -22,37 +27,40 @@ export class ModeSelectorProvider implements vscode.TreeDataProvider<ModeItem> {
 
             return Promise.resolve([
                 new ModeItem(
-                    'Setup Project',
-                    'Copy MCP server and prompt files to workspace',
+                    "Setup Project",
+                    "Copy MCP server and prompt files to workspace",
                     vscode.TreeItemCollapsibleState.None,
-                    'setup',
+                    "setup",
                     currentMode,
                     {
-                        command: 'kiro-copilot.setupProject',
-                        title: 'Setup Project'
+                        command: "kiro-copilot.setupProject",
+                        title: "Setup Project",
                     },
-                    new vscode.ThemeIcon('tools')
+                    createThemedIcon(KiroIcons.create)
                 ),
                 new ModeItem(
-                    `Current: ${currentMode === 'vibe' ? 'Vibe Coding' : 'Spec'}`,
-                    '',
+                    `Current: ${
+                        currentMode === "vibe" ? "🎯 Vibe Coding" : "📋 Spec"
+                    }`,
+                    "",
                     vscode.TreeItemCollapsibleState.Expanded,
-                    'current',
+                    "current",
                     currentMode
                 ),
                 new ModeItem(
-                    'Switch Mode',
-                    'Click to change coding mode',
+                    "Switch Mode",
+                    "Click to change coding mode",
                     vscode.TreeItemCollapsibleState.None,
-                    'switch',
+                    "switch",
                     currentMode,
                     {
-                        command: 'kiro-copilot.openModeSelector',
-                        title: 'Switch Mode'
-                    }
-                )
+                        command: "kiro-copilot.openModeSelector",
+                        title: "Switch Mode",
+                    },
+                    createThemedIcon("arrow-swap", "charts.purple")
+                ),
             ]);
-        } else if (element.contextValue === 'current') {
+        } else if (element.contextValue === "current") {
             // Show details about current mode
             const mode = this.modeManager.getCurrentMode();
             const benefits = this.modeManager.getModeBenefits(mode);
@@ -60,22 +68,23 @@ export class ModeSelectorProvider implements vscode.TreeDataProvider<ModeItem> {
             return Promise.resolve([
                 new ModeItem(
                     this.modeManager.getModeDescription(mode),
-                    '',
+                    "",
                     vscode.TreeItemCollapsibleState.Expanded,
-                    'description',
+                    "description",
                     mode
                 ),
-                ...benefits.map((benefit, index) =>
-                    new ModeItem(
-                        benefit,
-                        '',
-                        vscode.TreeItemCollapsibleState.None,
-                        `benefit-${index}`,
-                        mode,
-                        undefined,
-                        new vscode.ThemeIcon('check')
-                    )
-                )
+                ...benefits.map(
+                    (benefit, index) =>
+                        new ModeItem(
+                            benefit,
+                            "",
+                            vscode.TreeItemCollapsibleState.None,
+                            `benefit-${index}`,
+                            mode,
+                            undefined,
+                            new vscode.ThemeIcon("check")
+                        )
+                ),
             ]);
         }
 
@@ -97,12 +106,10 @@ class ModeItem extends vscode.TreeItem {
         this.tooltip = tooltip;
         this.contextValue = contextValue;
 
-        if (!iconPath && contextValue === 'current') {
-            this.iconPath = new vscode.ThemeIcon(
-                mode === 'vibe' ? 'rocket' : 'notebook'
-            );
-        } else if (!iconPath && contextValue === 'switch') {
-            this.iconPath = new vscode.ThemeIcon('arrow-swap');
+        if (!iconPath && contextValue === "current") {
+            this.iconPath = getModeIcon(mode, true);
+        } else if (!iconPath && contextValue === "switch") {
+            this.iconPath = createThemedIcon("arrow-swap", "charts.purple");
         }
     }
 }

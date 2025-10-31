@@ -2,7 +2,7 @@
   "name": "kiro-copilot-extension",
   "displayName": "Kiro-Style Copilot",
   "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "JosEduardoTeixeira",
   "engines": {
     "vscode": "^1.85.0"
@@ -36,6 +36,98 @@
       {
         "command": "kiro-copilot.startTaskFromFile",
         "title": "Kiro: Start Task from Current File"
+      },
+      {
+        "command": "kiro-copilot.executeTask",
+        "title": "Kiro: Execute Task"
+      },
+      {
+        "command": "kiro-copilot.markTaskComplete",
+        "title": "Kiro: Mark Active Task Complete"
+      },
+      {
+        "command": "kiro-copilot.clearActiveTask",
+        "title": "Kiro: Clear Active Task Tracking"
+      },
+      {
+        "command": "kiro-copilot.showActiveTask",
+        "title": "Kiro: Show Active Task"
+      },
+      {
+        "command": "kiro-copilot.startWorkflow",
+        "title": "Kiro: Start Workflow"
+      },
+      {
+        "command": "kiro-copilot.resumeWorkflow",
+        "title": "Kiro: Resume Workflow"
+      },
+      {
+        "command": "kiro-copilot.cancelWorkflow",
+        "title": "Kiro: Cancel Workflow"
+      },
+      {
+        "command": "kiro-copilot.showWorkflowStatus",
+        "title": "Kiro: Show Workflow Status"
+      },
+      {
+        "command": "kiro-copilot.openSpecDocument",
+        "title": "Kiro: Open Spec Document"
+      },
+      {
+        "command": "kiro-copilot.openSteeringFile",
+        "title": "Kiro: Open Steering File"
+      },
+      {
+        "command": "kiro-copilot.refreshSpecExplorer",
+        "title": "Kiro: Refresh Spec Explorer"
+      },
+      {
+        "command": "kiro-copilot.refineRequirements",
+        "title": "Kiro: Refine Requirements"
+      },
+      {
+        "command": "kiro-copilot.updateDesign",
+        "title": "Kiro: Update Design"
+      },
+      {
+        "command": "kiro-copilot.manageTasks",
+        "title": "Kiro: Manage Tasks"
+      },
+      {
+        "command": "kiro-copilot.createRequirements",
+        "title": "Kiro: Create Requirements"
+      },
+      {
+        "command": "kiro-copilot.createDesign",
+        "title": "Kiro: Create Design"
+      },
+      {
+        "command": "kiro-copilot.createTasks",
+        "title": "Kiro: Create Tasks"
+      },
+      {
+        "command": "kiro-copilot.deleteSpec",
+        "title": "Kiro: Delete Spec"
+      },
+      {
+        "command": "kiro-copilot.navigateToStage",
+        "title": "Kiro: Navigate to Stage"
+      },
+      {
+        "command": "kiro-copilot.updateStage",
+        "title": "Kiro: Update Stage"
+      },
+      {
+        "command": "kiro-copilot.viewChatSessions",
+        "title": "Kiro: View Chat Sessions"
+      },
+      {
+        "command": "kiro-copilot.cleanupSessions",
+        "title": "Kiro: Cleanup Old Chat Sessions"
+      },
+      {
+        "command": "kiro-copilot.completeCurrentSession",
+        "title": "Kiro: Complete Current Chat Session"
       }
     ],
     "configuration": {
@@ -172,12 +264,64 @@
     "views": {
       "kiro-copilot": [
         {
+          "id": "kiro-copilot.chatPanel",
+          "name": "Chat",
+          "type": "webview",
+          "icon": "$(comment-discussion)"
+        },
+        {
           "id": "kiro-copilot.modeSelector",
-          "name": "Coding Mode"
+          "name": "Coding Mode",
+          "icon": "$(rocket)"
+        },
+        {
+          "id": "kiro-copilot.specExplorer",
+          "name": "Spec Explorer",
+          "icon": "$(folder-library)"
         },
         {
           "id": "kiro-copilot.taskContext",
-          "name": "Task Context"
+          "name": "Task Context",
+          "icon": "$(checklist)"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "kiro-copilot.refineRequirements",
+          "when": "view == kiro-copilot.specExplorer && viewItem == spec",
+          "group": "1_spec@1"
+        },
+        {
+          "command": "kiro-copilot.updateDesign",
+          "when": "view == kiro-copilot.specExplorer && viewItem == spec",
+          "group": "1_spec@2"
+        },
+        {
+          "command": "kiro-copilot.manageTasks",
+          "when": "view == kiro-copilot.specExplorer && viewItem == spec",
+          "group": "1_spec@3"
+        },
+        {
+          "command": "kiro-copilot.deleteSpec",
+          "when": "view == kiro-copilot.specExplorer && viewItem == spec",
+          "group": "2_danger@1"
+        },
+        {
+          "command": "kiro-copilot.createRequirements",
+          "when": "view == kiro-copilot.specExplorer && viewItem == document-requirements-missing",
+          "group": "inline"
+        },
+        {
+          "command": "kiro-copilot.createDesign",
+          "when": "view == kiro-copilot.specExplorer && viewItem == document-design-missing",
+          "group": "inline"
+        },
+        {
+          "command": "kiro-copilot.createTasks",
+          "when": "view == kiro-copilot.specExplorer && viewItem == document-tasks-missing",
+          "group": "inline"
         }
       ]
     },
@@ -206,15 +350,16 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && tsc -p ./src/webview && node -e \"require('fs').cpSync('src/webview/chatPanel.css', 'out/webview/chatPanel.css')\"",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.x",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
     "eslint": "^8.56.0",
