@@ -3,6 +3,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { PromptManager } from '../services/promptManager';
 import { ModeManager } from '../services/modeManager';
+import { IntentService, IntentStatusEvent } from '../services/intentService';
+import { AutonomyPolicyService, AutonomyPolicy } from '../services/autonomyPolicyService';
 
 export type TaskStatus = 'pending' | 'completed' | 'failed';
 
@@ -53,9 +55,17 @@ interface TaskGroup {
     completedCount: number;
     failedCount: number;
     isSpec: boolean;
+    specFolderName?: string;
+    autonomyInfo?: AutonomyBadgeInfo;
 }
 
-export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem> {
+interface AutonomyBadgeInfo {
+    state: 'ready' | 'consent-required' | 'setup-required' | 'running' | 'failed' | 'cancelled';
+    label: string;
+    tooltip: string;
+}
+
+export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem>, vscode.Disposable {
     private _onDidChangeTreeData: vscode.EventEmitter<TaskTreeItem | undefined | null | void> = new vscode.EventEmitter<TaskTreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<TaskTreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
@@ -64,17 +74,84 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     private initialScanComplete: boolean = false;
     private lastScanTimestamp: number = 0;
     private fileWatcher: vscode.FileSystemWatcher | undefined;
+    private specFolderWatcher: vscode.FileSystemWatcher | undefined;
+    private disposables: vscode.Disposable[] = [];
+    private intentStatusBySpec: Map<string, IntentStatusEvent> = new Map();
+    private latestPolicy?: AutonomyPolicy;
     private readonly DEBOUNCE_DELAY = 1000; // 1 second
 
     constructor(
         private promptManager: PromptManager,
-        private modeManager: ModeManager
+        private modeManager: ModeManager,
+        private intentService: IntentService,
+        private autonomyPolicyService: AutonomyPolicyService
     ) {
         // Initialize file system watcher
         this.initializeFileWatcher();
 
         // Perform initial scan
         this.performInitialScan();
+        this.registerDisposable(this.intentService.onDidChangeStatus(event => this.handleIntentStatusEvent(event)));
+        this.registerDisposable(this.autonomyPolicyService.onDidUpdatePolicy(() => {
+            void this.hydrateAutonomyContext();
+        }));
+        void this.hydrateAutonomyContext();
+    }
+
+    private handleIntentStatusEvent(event: IntentStatusEvent): void {
+        const specSlug = event.payload?.specSlug;
+        if (!specSlug) {
+            return;
+        }
+
+        this.intentStatusBySpec.set(specSlug, event);
+        this.refresh();
+
+        if (event.stage === 'dispatched' || event.stage === 'failed' || event.stage === 'cancelled') {
+            setTimeout(() => {
+                const current = this.intentStatusBySpec.get(specSlug);
+                if (current && current.timestamp === event.timestamp) {
+                    this.intentStatusBySpec.delete(specSlug);
+                    this.refresh();
+                }
+            }, 4000);
+        }
+    }
+
+    private async hydrateAutonomyContext(): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            this.latestPolicy = undefined;
+            this.refresh();
+            return;
+        }
+
+        const result = await this.autonomyPolicyService.getPolicy(workspaceFolder);
+        if (result.policy) {
+            this.latestPolicy = result.policy;
+        } else {
+            this.latestPolicy = undefined;
+        }
+        this.refresh();
+    }
+
+    private registerDisposable(disposable?: vscode.Disposable): void {
+        if (disposable) {
+            this.disposables.push(disposable);
+        }
+    }
+
+    dispose(): void {
+        this.fileWatcher?.dispose();
+        this.specFolderWatcher?.dispose();
+        for (const disposable of this.disposables) {
+            try {
+                disposable.dispose();
+            } catch (error) {
+                console.error('[TaskContextProvider] Failed to dispose resource:', error);
+            }
+        }
+        this.disposables = [];
     }
 
     refresh(): void {
@@ -133,7 +210,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
             }
 
             return items;
-        } else if (element.contextValue === 'task-group') {
+        } else if (element instanceof TaskGroupTreeItem) {
             // Show tasks within a task group
             const groupItem = element as TaskGroupTreeItem;
             console.log(`[TaskContextProvider] Expanding task group '${groupItem.label}': ${groupItem.taskGroup.tasks.length} tasks`);
@@ -248,7 +325,9 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                 tasks: scanResult.tasks,
                 completedCount,
                 failedCount,
-                isSpec
+                isSpec,
+                specFolderName: scanResult.specFolder,
+                autonomyInfo: isSpec ? this.getAutonomyBadge(scanResult.specFolder) : undefined
             });
         }
 
@@ -262,22 +341,138 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         return groups;
     }
 
+    private getAutonomyBadge(specFolder?: string): AutonomyBadgeInfo | undefined {
+        if (!specFolder) {
+            return undefined;
+        }
+
+        const statusEvent = this.intentStatusBySpec.get(specFolder);
+        if (statusEvent) {
+            return this.formatIntentStage(statusEvent);
+        }
+
+        if (!this.latestPolicy) {
+            return {
+                state: 'setup-required',
+                label: 'Autonomy setup required',
+                tooltip: 'Run Kiro: Setup Project to sync prompts and manifest files.'
+            };
+        }
+
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return {
+                state: 'setup-required',
+                label: 'No workspace detected',
+                tooltip: 'Open a workspace folder to enable autonomy.'
+            };
+        }
+
+        const consent = this.autonomyPolicyService.getConsentState(workspaceFolder, 'executeTask.next');
+        if (consent) {
+            const expiry = new Date(consent.expiresAt).toLocaleTimeString();
+            return {
+                state: 'ready',
+                label: 'Autonomy ready',
+                tooltip: `Consent active until ${expiry}.`
+            };
+        }
+
+        return {
+            state: 'consent-required',
+            label: 'Consent required',
+            tooltip: 'Run Kiro: Enable Autonomy to grant consent.'
+        };
+    }
+
+    private formatIntentStage(event: IntentStatusEvent): AutonomyBadgeInfo {
+        switch (event.stage) {
+            case 'failed':
+                return {
+                    state: 'failed',
+                    label: 'Autonomy failed',
+                    tooltip: event.message
+                };
+            case 'cancelled':
+                return {
+                    state: 'cancelled',
+                    label: 'Autonomy cancelled',
+                    tooltip: event.message
+                };
+            case 'dispatched':
+                return {
+                    state: 'ready',
+                    label: 'Intent dispatched',
+                    tooltip: event.message
+                };
+            case 'consentRequested':
+                return {
+                    state: 'running',
+                    label: 'Consent requested',
+                    tooltip: event.message
+                };
+            case 'consentGranted':
+                return {
+                    state: 'running',
+                    label: 'Consent granted',
+                    tooltip: event.message
+                };
+            case 'dispatching':
+                return {
+                    state: 'running',
+                    label: 'Dispatching intent',
+                    tooltip: event.message
+                };
+            case 'queued':
+                return {
+                    state: 'running',
+                    label: 'Autonomy queued',
+                    tooltip: event.message
+                };
+            default:
+                return {
+                    state: 'running',
+                    label: 'Autonomy update',
+                    tooltip: event.message
+                };
+        }
+    }
+
     /**
      * Create a tree item for a task group
      */
     private createTaskGroupItem(group: TaskGroup): TaskGroupTreeItem {
-        const icon = this.getTaskGroupIcon(group);
         const statusText = this.getTaskGroupStatus(group);
+        const contextValue = group.isSpec ? this.getSpecContextValue(group) : 'task-group';
+        const tooltipParts = [`${statusText} • ${group.tasks.length} task(s)`];
+        let icon = this.getTaskGroupIcon(group);
+        let description: string | undefined;
+
+        if (group.autonomyInfo) {
+            description = group.autonomyInfo.label;
+            tooltipParts.push(`Autonomy: ${group.autonomyInfo.tooltip}`);
+            if (group.autonomyInfo.state === 'running') {
+                icon = new vscode.ThemeIcon('sync~spin');
+            } else if (group.autonomyInfo.state === 'failed') {
+                icon = new vscode.ThemeIcon('warning', new vscode.ThemeColor('testing.iconFailed'));
+            }
+        }
 
         return new TaskGroupTreeItem(
             group.label,
-            `${statusText} • ${group.tasks.length} task(s)`,
+            tooltipParts.join('\n'),
             vscode.TreeItemCollapsibleState.Collapsed,
-            'task-group',
+            contextValue,
             group,
             undefined,
-            icon
+            icon,
+            description
         );
+    }
+
+    private getSpecContextValue(group: TaskGroup): string {
+        const autonomyState = group.autonomyInfo?.state ?? 'unknown';
+        return `spec-task-group:${autonomyState}`;
     }
 
     private getTaskGroupIcon(group: TaskGroup): vscode.ThemeIcon {
@@ -376,7 +571,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                 // - [ ] task (pending)
                 // - [x] task (completed)
                 // - [x] task [failed] or - [ ] task [FAILED] (failed)
-                const checkboxMatch = line.match(/^[\s-]*\[([x ])\]\s*(.+)/i);
+                const checkboxMatch = line.match(/^\s*(?:[-*+>]\s*)?\[([x ])\]\s*(.+)/i);
                 if (checkboxMatch) {
                     const isChecked = checkboxMatch[1].toLowerCase() === 'x';
                     const taskText = checkboxMatch[2].trim();
@@ -407,7 +602,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                 }
 
                 // Match numbered tasks: 1. task or [ ] 5. task
-                const numberedMatch = line.match(/^[\s-]*(?:\[([x ])\]\s*)?(\d+)\.\s*(.+)/i);
+                const numberedMatch = line.match(/^\s*(?:[-*+>]\s*)?(?:\[([x ])\]\s*)?(\d+)[.)]\s*(.+)/i);
                 if (numberedMatch) {
                     const isChecked = numberedMatch[1]?.toLowerCase() === 'x';
                     const taskNumber = numberedMatch[2];
@@ -528,14 +723,121 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
      * Initialize file system watcher for tasks.md files
      */
     private initializeFileWatcher(): void {
-        // Watch pattern: **/tasks.md and .kiro/specs/**/tasks.md
-        this.fileWatcher = vscode.workspace.createFileSystemWatcher(
-            '**/{tasks.md,.kiro/specs/**/tasks.md}'
-        );
+        // Dispose any existing watchers before creating new ones
+        this.fileWatcher?.dispose();
+        this.specFolderWatcher?.dispose();
 
-        this.fileWatcher.onDidCreate((uri) => this.handleFileChange(uri, 'create'));
-        this.fileWatcher.onDidChange((uri) => this.handleFileChange(uri, 'change'));
-        this.fileWatcher.onDidDelete((uri) => this.handleFileChange(uri, 'delete'));
+        // Watch all tasks.md files across the workspace
+        this.fileWatcher = vscode.workspace.createFileSystemWatcher('**/tasks.md');
+        this.registerDisposable(this.fileWatcher);
+        this.registerDisposable(this.fileWatcher.onDidCreate((uri) => this.handleFileChange(uri, 'create')));
+        this.registerDisposable(this.fileWatcher.onDidChange((uri) => this.handleFileChange(uri, 'change')));
+        this.registerDisposable(this.fileWatcher.onDidDelete((uri) => this.handleFileChange(uri, 'delete')));
+
+        // Watch for spec folder creation/deletion to keep spec list in sync
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (workspaceFolder) {
+            const specPattern = new vscode.RelativePattern(workspaceFolder, '.kiro/specs/*');
+            this.specFolderWatcher = vscode.workspace.createFileSystemWatcher(specPattern, false, true, false);
+            this.registerDisposable(this.specFolderWatcher);
+            this.registerDisposable(this.specFolderWatcher.onDidCreate((uri) => this.handleSpecFolderChange(uri, 'create')));
+            this.registerDisposable(this.specFolderWatcher.onDidDelete((uri) => this.handleSpecFolderChange(uri, 'delete')));
+        }
+
+        // Listen for VS Code file create/delete events (covers actions triggered via the explorer)
+        this.registerDisposable(
+            vscode.workspace.onDidCreateFiles(event => this.handleWorkspaceFilesEvent(event.files, 'create'))
+        );
+        this.registerDisposable(
+            vscode.workspace.onDidDeleteFiles(event => this.handleWorkspaceFilesEvent(event.files, 'delete'))
+        );
+    }
+
+    private async handleWorkspaceFilesEvent(
+        files: readonly vscode.Uri[],
+        changeType: 'create' | 'delete'
+    ): Promise<void> {
+        const affectedSpecs = new Set<string>();
+
+        for (const uri of files) {
+            const specName = this.extractSpecFolderName(uri.fsPath);
+            if (specName) {
+                affectedSpecs.add(specName);
+            }
+        }
+
+        if (affectedSpecs.size === 0) {
+            return;
+        }
+
+        for (const specName of affectedSpecs) {
+            await this.synchronizeSpecFolder(specName, changeType);
+        }
+    }
+
+    private async handleSpecFolderChange(
+        uri: vscode.Uri,
+        changeType: 'create' | 'delete'
+    ): Promise<void> {
+        const specName = this.extractSpecFolderName(uri.fsPath);
+        if (!specName) {
+            return;
+        }
+
+        await this.synchronizeSpecFolder(specName, changeType);
+    }
+
+    private async synchronizeSpecFolder(
+        specName: string,
+        changeType: 'create' | 'delete'
+    ): Promise<void> {
+        if (changeType === 'delete') {
+            this.removeSpecFromCache(specName);
+        } else {
+            await this.scanSpecTasks(specName);
+        }
+
+        this.refresh();
+    }
+
+    private async scanSpecTasks(specName: string): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return;
+        }
+
+        const tasksPath = path.join(workspaceFolder.uri.fsPath, '.kiro', 'specs', specName, 'tasks.md');
+
+        try {
+            await fs.access(tasksPath);
+        } catch {
+            // No tasks file yet for this spec - ensure cache is cleared to avoid stale entries
+            this.removeSpecFromCache(specName);
+            return;
+        }
+
+        await this.scanSingleFile(tasksPath);
+    }
+
+    private removeSpecFromCache(specName: string): void {
+        let removed = false;
+
+        for (const [filePath, result] of Object.entries(this.taskCache)) {
+            if (result.specFolder === specName) {
+                delete this.taskCache[filePath];
+                removed = true;
+            }
+        }
+
+        if (removed) {
+            console.log(`[TaskContextProvider] Removed spec '${specName}' from cache`);
+        }
+    }
+
+    private extractSpecFolderName(filePath: string): string | undefined {
+        const normalized = path.normalize(filePath);
+        const match = normalized.match(/\.kiro[\\/]specs[\\/]([^\\/]+)/);
+        return match ? match[1] : undefined;
     }
 
     /**
@@ -739,6 +1041,154 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
 
         return organized;
     }
+
+    public async handleExecuteNextAutonomyCommand(treeItem?: TaskTreeItem): Promise<void> {
+        const specName = this.getSpecNameFromTreeItem(treeItem);
+        if (!specName) {
+            vscode.window.showWarningMessage('Select a spec in the Task Context view to execute autonomously.');
+            return;
+        }
+
+        const pendingTask = this.findNextPendingTask(specName);
+        if (!pendingTask) {
+            vscode.window.showInformationMessage(`Spec '${specName}' has no pending tasks to execute.`);
+            return;
+        }
+
+        await this.intentService.dispatchIntent({
+            actionId: 'executeTask.next',
+            activationSource: 'taskTree',
+            specSlug: specName,
+            userMessage: `Execute the next unchecked task (${pendingTask.label}) for spec '${specName}'.`,
+            taskLabel: pendingTask.label,
+            metadata: {
+                source: 'taskContext',
+                filePath: pendingTask.filePath,
+                lineNumber: pendingTask.lineNumber
+            },
+            instructionsVersion: this.latestPolicy?.version
+        });
+    }
+
+    public async handleRetryAutonomyCommand(treeItem?: TaskTreeItem): Promise<void> {
+        const specName = this.getSpecNameFromTreeItem(treeItem);
+        if (!specName) {
+            vscode.window.showWarningMessage('Select a spec in the Task Context view to retry a task.');
+            return;
+        }
+
+        const retryTask = this.findRetryCandidateTask(specName);
+        if (!retryTask) {
+            vscode.window.showInformationMessage(`Spec '${specName}' has no failed tasks to retry.`);
+            return;
+        }
+
+        const tasks = this.getTasksForSpec(specName);
+        const taskIndex = Math.max(1, tasks.indexOf(retryTask) + 1);
+
+        await this.intentService.dispatchIntent({
+            actionId: 'executeTask.retry',
+            activationSource: 'taskTree',
+            specSlug: specName,
+            taskId: taskIndex,
+            taskLabel: retryTask.label,
+            userMessage: `Retry task ${retryTask.label} for spec '${specName}'.`,
+            metadata: {
+                source: 'taskContext',
+                filePath: retryTask.filePath,
+                lineNumber: retryTask.lineNumber
+            },
+            instructionsVersion: this.latestPolicy?.version
+        });
+    }
+
+    private getSpecNameFromTreeItem(treeItem?: TaskTreeItem): string | undefined {
+        if (!treeItem || !(treeItem instanceof TaskGroupTreeItem)) {
+            return undefined;
+        }
+
+        if (!treeItem.taskGroup.isSpec) {
+            return undefined;
+        }
+
+        return treeItem.taskGroup.specFolderName ?? treeItem.taskGroup.tasks[0]?.specFolder;
+    }
+
+    private findNextPendingTask(specName: string): TaskItem | undefined {
+        const tasks = this.getTasksForSpec(specName);
+        return tasks.find(task => task.status === 'pending') ?? tasks.find(task => task.status === 'failed');
+    }
+
+    private findRetryCandidateTask(specName: string): TaskItem | undefined {
+        const tasks = this.getTasksForSpec(specName);
+        for (let i = tasks.length - 1; i >= 0; i--) {
+            if (tasks[i].status === 'failed') {
+                return tasks[i];
+            }
+        }
+        return undefined;
+    }
+
+    private getTasksForSpec(specName: string): TaskItem[] {
+        for (const scanResult of Object.values(this.taskCache)) {
+            if (scanResult.specFolder === specName) {
+                return scanResult.tasks;
+            }
+        }
+        return [];
+    }
+
+    public async handleDeleteSpecCommand(treeItem?: TaskTreeItem): Promise<void> {
+        if (!treeItem || !(treeItem instanceof TaskGroupTreeItem) || !treeItem.taskGroup.isSpec) {
+            vscode.window.showWarningMessage('Select a spec in the Task Context view to delete it.');
+            return;
+        }
+
+        const specName = treeItem.taskGroup.specFolderName ?? treeItem.taskGroup.tasks[0]?.specFolder;
+        if (!specName) {
+            vscode.window.showErrorMessage('Unable to determine spec folder for the selected item.');
+            return;
+        }
+
+        const confirmation = await vscode.window.showWarningMessage(
+            `Delete spec '${specName}'? This will remove the folder .kiro/specs/${specName}.`,
+            { modal: true },
+            'Delete'
+        );
+
+        if (confirmation !== 'Delete') {
+            return;
+        }
+
+        const success = await this.deleteSpecByName(specName);
+        if (success) {
+            vscode.window.showInformationMessage(`Spec '${specName}' deleted.`);
+        }
+    }
+
+    private async deleteSpecByName(specName: string): Promise<boolean> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage('No workspace folder found for deleting the spec.');
+            return false;
+        }
+
+        const specPath = path.join(workspaceFolder.uri.fsPath, '.kiro', 'specs', specName);
+
+        try {
+            await fs.rm(specPath, { recursive: true, force: true });
+            this.removeSpecFromCache(specName);
+            this.refresh();
+            console.log(`[TaskContextProvider] Deleted spec '${specName}' at ${specPath}`);
+            return true;
+        } catch (error) {
+            console.error(`[TaskContextProvider] Failed to delete spec '${specName}':`, error);
+            vscode.window.showErrorMessage(
+                `Failed to delete spec '${specName}': ${error instanceof Error ? error.message : String(error)}`
+            );
+            return false;
+        }
+    }
 }
 
 class TaskTreeItem extends vscode.TreeItem {
@@ -748,11 +1198,15 @@ class TaskTreeItem extends vscode.TreeItem {
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly contextValue: string,
         public readonly command?: vscode.Command,
-        public readonly iconPath?: vscode.ThemeIcon
+        public readonly iconPath?: vscode.ThemeIcon,
+        public readonly descriptionText?: string
     ) {
         super(label, collapsibleState);
         this.tooltip = tooltip;
         this.contextValue = contextValue;
+        if (descriptionText) {
+            this.description = descriptionText;
+        }
     }
 }
 
@@ -764,9 +1218,10 @@ class SpecFolderTreeItem extends TaskTreeItem {
         contextValue: string,
         public readonly specInfo: SpecFolderInfo,
         command?: vscode.Command,
-        iconPath?: vscode.ThemeIcon
+        iconPath?: vscode.ThemeIcon,
+        descriptionText?: string
     ) {
-        super(label, tooltip, collapsibleState, contextValue, command, iconPath);
+        super(label, tooltip, collapsibleState, contextValue, command, iconPath, descriptionText);
     }
 }
 
@@ -778,8 +1233,9 @@ class TaskGroupTreeItem extends TaskTreeItem {
         contextValue: string,
         public readonly taskGroup: TaskGroup,
         command?: vscode.Command,
-        iconPath?: vscode.ThemeIcon
+        iconPath?: vscode.ThemeIcon,
+        descriptionText?: string
     ) {
-        super(label, tooltip, collapsibleState, contextValue, command, iconPath);
+        super(label, tooltip, collapsibleState, contextValue, command, iconPath, descriptionText);
     }
 }

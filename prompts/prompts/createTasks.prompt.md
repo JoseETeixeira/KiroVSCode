@@ -1,5 +1,8 @@
----
 agent: kiro
+policyMetadata:
+  version: "2025.11"
+  llmExpectation: "Call runPromptWithLLM to generate implementation plans and include llmResponse plus tokenUsage in the MCP response envelope."
+  supportedActions: []
 ---
 # **Task Generation Guide**
 

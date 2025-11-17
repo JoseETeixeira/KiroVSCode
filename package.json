@@ -2,7 +2,7 @@
   "name": "kiro-copilot-extension",
   "displayName": "Kiro-Style Copilot",
   "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "JosEduardoTeixeira",
   "engines": {
     "vscode": "^1.85.0"
@@ -36,6 +36,22 @@
       {
         "command": "kiro-copilot.startTaskFromFile",
         "title": "Kiro: Start Task from Current File"
+      },
+      {
+        "command": "kiro-copilot.deleteSpec",
+        "title": "Kiro: Delete Spec"
+      },
+      {
+        "command": "kiro-copilot.enableAutonomy",
+        "title": "Kiro: Enable Autonomy"
+      },
+      {
+        "command": "kiro-copilot.executeNextAutonomously",
+        "title": "Kiro: Execute Next Task Autonomously"
+      },
+      {
+        "command": "kiro-copilot.retryAutonomously",
+        "title": "Kiro: Retry Task Autonomously"
       }
     ],
     "configuration": {
@@ -178,6 +194,30 @@
         {
           "id": "kiro-copilot.taskContext",
           "name": "Task Context"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "kiro-copilot.executeNextAutonomously",
+          "when": "view == kiro-copilot.taskContext && viewItem =~ /spec-task-group:(ready|failed|cancelled)/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kiro-copilot.retryAutonomously",
+          "when": "view == kiro-copilot.taskContext && viewItem =~ /spec-task-group:(ready|failed|cancelled)/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kiro-copilot.enableAutonomy",
+          "when": "view == kiro-copilot.taskContext && viewItem =~ /spec-task-group:(consent-required|setup-required)/",
+          "group": "navigation@3"
+        },
+        {
+          "command": "kiro-copilot.deleteSpec",
+          "when": "view == kiro-copilot.taskContext && viewItem =~ /spec-task-group:/",
+          "group": "inline"
         }
       ]
     },

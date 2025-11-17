@@ -1,7 +1,7 @@
 ---
 description: Kiro AI assistant and IDE for developers
 
-tools: ['runCommands', 'runTasks', 'kiro/*', 'edit', 'runNotebooks', 'search', 'new', 'extensions', 'todos', 'runSubagent', 'usages', 'vscodeAPI', 'problems', 'changes', 'testFailure', 'openSimpleBrowser', 'fetch', 'githubRepo']
+tools: ['edit', 'runNotebooks', 'search', 'new', 'runCommands', 'runTasks', 'kiro/*', 'github/github-mcp-server/*', 'usages', 'vscodeAPI', 'problems', 'changes', 'testFailure', 'openSimpleBrowser', 'fetch', 'githubRepo', 'extensions', 'todos', 'runSubagent']
 ---
 
 # Identity

@@ -5,6 +5,8 @@ import { PromptManager } from './services/promptManager';
 import { ChatParticipant } from './chat/chatParticipant';
 import { ModeManager } from './services/modeManager';
 import { SetupService } from './services/setupService';
+import { AutonomyPolicyService } from './services/autonomyPolicyService';
+import { IntentService } from './services/intentService';
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Kiro-Style Copilot extension is now active');
@@ -13,6 +15,10 @@ export function activate(context: vscode.ExtensionContext) {
     const modeManager = new ModeManager(context);
     const promptManager = new PromptManager(context);
     const setupService = new SetupService(context);
+    const autonomyPolicyService = new AutonomyPolicyService(context);
+    const intentService = new IntentService(context, autonomyPolicyService);
+
+    context.subscriptions.push(autonomyPolicyService, intentService);
 
     // Register mode selector view
     const modeSelectorProvider = new ModeSelectorProvider(modeManager);
@@ -21,10 +27,16 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register task context provider
-    const taskContextProvider = new TaskContextProvider(promptManager, modeManager);
+    const taskContextProvider = new TaskContextProvider(
+        promptManager,
+        modeManager,
+        intentService,
+        autonomyPolicyService
+    );
     context.subscriptions.push(
         vscode.window.registerTreeDataProvider('kiro-copilot.taskContext', taskContextProvider)
     );
+    context.subscriptions.push(taskContextProvider);
 
     // Watch for active editor changes to update task context
     context.subscriptions.push(
@@ -121,6 +133,64 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('kiro-copilot.deleteSpec', async (treeItem) => {
+            await taskContextProvider.handleDeleteSpecCommand(treeItem as any);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('kiro-copilot.executeNextAutonomously', async (treeItem) => {
+            await taskContextProvider.handleExecuteNextAutonomyCommand(treeItem as any);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('kiro-copilot.retryAutonomously', async (treeItem) => {
+            await taskContextProvider.handleRetryAutonomyCommand(treeItem as any);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('kiro-copilot.enableAutonomy', async () => {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                vscode.window.showErrorMessage('Open a workspace folder before enabling autonomy.');
+                return;
+            }
+
+            const { policy, error } = await autonomyPolicyService.getPolicy(workspaceFolder);
+            if (!policy) {
+                vscode.window.showErrorMessage(error ?? 'Autonomy policy unavailable. Run "Kiro: Setup Project" first.');
+                return;
+            }
+
+            const consentActions = policy.actions.filter(action => action.requiresConsent);
+            if (consentActions.length === 0) {
+                vscode.window.showInformationMessage('No consent-required autonomy actions are defined in the manifest.');
+                return;
+            }
+
+            const pick = await vscode.window.showQuickPick(
+                consentActions.map(action => ({
+                    label: action.description || action.id,
+                    description: action.id,
+                    action
+                })),
+                {
+                    placeHolder: 'Select the autonomy action to enable'
+                }
+            );
+
+            if (!pick) {
+                return;
+            }
+
+            await autonomyPolicyService.requestConsent(pick.action.id, workspaceFolder);
+            taskContextProvider.refresh();
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('kiro-copilot.refreshModeSelector', () => {
             modeSelectorProvider.refresh();
         })
@@ -193,7 +263,14 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Register chat participant
-    const chatParticipant = new ChatParticipant(modeManager, promptManager, taskContextProvider, context, setupService);
+    const chatParticipant = new ChatParticipant(
+        modeManager,
+        promptManager,
+        taskContextProvider,
+        context,
+        setupService,
+        autonomyPolicyService
+    );
     context.subscriptions.push(chatParticipant.register());
 
     // Show welcome message on first activation

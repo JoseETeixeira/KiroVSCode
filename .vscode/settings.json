@@ -55,5 +55,13 @@
   "C_Cpp_Runner.useLeakSanitizer": false,
   "C_Cpp_Runner.showCompilationTime": false,
   "C_Cpp_Runner.useLinkTimeOptimization": false,
-  "C_Cpp_Runner.msvcSecureNoWarnings": false
+  "C_Cpp_Runner.msvcSecureNoWarnings": false,
+  "chat.mcp.serverSampling": {
+    "VSCodeExtension/.vscode/mcp.json: kiro": {
+      "allowedModels": [
+        "copilot/claude-sonnet-4.5",
+        "copilot/gpt-5.1-codex"
+      ]
+    }
+  }
 }

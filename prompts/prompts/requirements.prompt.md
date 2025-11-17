@@ -1,5 +1,19 @@
----
 agent: kiro
+policyMetadata:
+  version: "2025.11"
+  llmExpectation: "Call runPromptWithLLM for requirements generation and include llmResponse plus tokenUsage in the MCP response envelope."
+  supportedActions:
+    - id: spec.generateRequirements
+      tool: kiro_create_requirements
+      description: Start or update requirements for the provided spec slug
+      requiresConsent: true
+      consentPhrase: "@kiro continue autonomously"
+      requiresLLM: true
+      intentFields:
+        - specSlug
+        - instructionsVersion
+        - consentToken
+        - userMessage
 ---
 
 ## **Requirements Generation Guide**

@@ -6,7 +6,16 @@ import { copyDirectorySkippingExisting, CopyStats, createCopyStats } from './pro
 interface PromptCopyDetails {
     prompts: CopyStats;
     instructions: CopyStats;
+    autonomy?: AutonomyCopyDetails;
     failureCount: number;
+}
+
+type AutonomyCopyStatus = 'missing' | 'created' | 'skipped' | 'failed';
+
+interface AutonomyCopyDetails {
+    version?: string;
+    manifestStatus: AutonomyCopyStatus;
+    versionFileStatus: AutonomyCopyStatus;
 }
 
 export class SetupService {
@@ -112,6 +121,11 @@ export class SetupService {
 
             const instructionStats = createCopyStats();
             const promptStats = createCopyStats();
+            const autonomyDetails: AutonomyCopyDetails = {
+                version: undefined,
+                manifestStatus: 'missing',
+                versionFileStatus: 'missing'
+            };
 
             const instructionsSource = path.join(extensionPromptsPath, 'instructions');
             if (fs.existsSync(instructionsSource)) {
@@ -127,6 +141,50 @@ export class SetupService {
                 this.copyFlatFiles(extensionPromptsPath, githubPromptsPath, '.prompt.md', promptStats);
             }
 
+            const autonomyManifestSource = path.join(extensionPromptsPath, 'autonomy.manifest.json');
+            if (fs.existsSync(autonomyManifestSource)) {
+                const manifestDestination = path.join(githubPromptsPath, 'autonomy.manifest.json');
+                autonomyDetails.version = this.readAutonomyVersion(autonomyManifestSource) ?? autonomyDetails.version;
+                try {
+                    if (fs.existsSync(manifestDestination)) {
+                        promptStats.skipped++;
+                        autonomyDetails.manifestStatus = 'skipped';
+                    } else {
+                        fs.copyFileSync(autonomyManifestSource, manifestDestination);
+                        promptStats.created++;
+                        autonomyDetails.manifestStatus = 'created';
+                    }
+                } catch (error) {
+                    autonomyDetails.manifestStatus = 'failed';
+                    promptStats.failed.push({
+                        relativePath: path.relative(githubPromptsPath, manifestDestination) || 'autonomy.manifest.json',
+                        error: error instanceof Error ? error.message : String(error)
+                    });
+                }
+            }
+
+            const autonomyVersionSource = path.join(extensionPromptsPath, 'autonomy-version.json');
+            if (fs.existsSync(autonomyVersionSource)) {
+                const versionDestination = path.join(githubPromptsPath, 'autonomy-version.json');
+                autonomyDetails.version = autonomyDetails.version ?? this.readAutonomyVersion(autonomyVersionSource);
+                try {
+                    if (fs.existsSync(versionDestination)) {
+                        promptStats.skipped++;
+                        autonomyDetails.versionFileStatus = 'skipped';
+                    } else {
+                        fs.copyFileSync(autonomyVersionSource, versionDestination);
+                        promptStats.created++;
+                        autonomyDetails.versionFileStatus = 'created';
+                    }
+                } catch (error) {
+                    autonomyDetails.versionFileStatus = 'failed';
+                    promptStats.failed.push({
+                        relativePath: path.relative(githubPromptsPath, versionDestination) || 'autonomy-version.json',
+                        error: error instanceof Error ? error.message : String(error)
+                    });
+                }
+            }
+
             const failures = [...instructionStats.failed, ...promptStats.failed];
             const failureCount = failures.length;
 
@@ -134,6 +192,17 @@ export class SetupService {
                 `Prompts: ${promptStats.created} created, ${promptStats.skipped} skipped`,
                 `Instructions: ${instructionStats.created} created, ${instructionStats.skipped} skipped`
             ];
+
+            if (
+                autonomyDetails.version ||
+                autonomyDetails.manifestStatus !== 'missing' ||
+                autonomyDetails.versionFileStatus !== 'missing'
+            ) {
+                const versionLabel = autonomyDetails.version ? `v${autonomyDetails.version}` : 'version unknown';
+                messageParts.push(
+                    `Autonomy: ${versionLabel} (manifest ${autonomyDetails.manifestStatus}, version file ${autonomyDetails.versionFileStatus})`
+                );
+            }
 
             if (failureCount > 0) {
                 const failureSummary = failures
@@ -149,6 +218,7 @@ export class SetupService {
                 details: {
                     prompts: promptStats,
                     instructions: instructionStats,
+                    autonomy: autonomyDetails,
                     failureCount
                 }
             };
@@ -269,6 +339,17 @@ export class SetupService {
             } else {
                 fs.copyFileSync(srcPath, destPath);
             }
+        }
+    }
+
+    private readAutonomyVersion(filePath: string): string | undefined {
+        try {
+            const raw = fs.readFileSync(filePath, 'utf-8');
+            const parsed = JSON.parse(raw);
+            return typeof parsed.version === 'string' ? parsed.version : undefined;
+        } catch (error) {
+            console.warn('Unable to parse autonomy version from', filePath, error);
+            return undefined;
         }
     }
 
