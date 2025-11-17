@@ -8,6 +8,7 @@ export interface CopyFailure {
 
 export interface CopyStats {
     created: number;
+    updated: number;
     skipped: number;
     failed: CopyFailure[];
 }
@@ -18,6 +19,7 @@ export interface CopyOptions {
 
 export const createCopyStats = (): CopyStats => ({
     created: 0,
+    updated: 0,
     skipped: 0,
     failed: []
 });

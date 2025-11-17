@@ -7,7 +7,7 @@ policyMetadata:
          tool: kiro_execute_task
          description: Run the next unchecked task in the active spec
          requiresConsent: true
-         consentPhrase: "@kiro continue autonomously"
+         consentPhrase: "continue autonomously"
          requiresLLM: true
          intentFields:
             - specSlug
@@ -18,7 +18,7 @@ policyMetadata:
          tool: kiro_execute_task
          description: Retry the previously failed task for the active spec
          requiresConsent: true
-         consentPhrase: "@kiro continue autonomously"
+         consentPhrase: "continue autonomously"
          requiresLLM: true
          intentFields:
             - specSlug

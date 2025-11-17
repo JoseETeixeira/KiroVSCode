@@ -31,7 +31,7 @@ Enable proactive, autonomous MCP/tool execution by enriching the instructions, a
 
 **Acceptance Criteria (EARS)**  
 - WHEN the instructions are copied into `.github/instructions` THEN the system SHALL include a section that enumerates approved autonomous actions (e.g., continue next task, re-run failed task).  
-- IF an autonomous action requires user consent THEN the system SHALL specify the explicit phrase the user must issue (e.g., "@kiro continue autonomously").  
+- IF an autonomous action requires user consent THEN the system SHALL specify the explicit phrase the user must issue (e.g., "continue autonomously").  
 - WHERE no consent has been captured THEN the instructions SHALL state that manual confirmation is required before each tool invocation.  
 - WHILE instructions evolve over time the extension SHALL version them so MCP workflows can detect compatibility.
 

@@ -63,5 +63,6 @@
         "copilot/gpt-5.1-codex"
       ]
     }
-  }
+  },
+  "workbench.experimental.chatApi": true
 }

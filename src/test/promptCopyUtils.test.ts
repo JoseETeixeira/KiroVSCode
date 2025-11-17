@@ -17,6 +17,7 @@ test('copies files into an empty destination', (t) => {
     copyDirectorySkippingExisting(fixture.src, fixture.dest, stats);
 
     assert.strictEqual(stats.created, 1);
+    assert.strictEqual(stats.updated, 0);
     assert.strictEqual(stats.skipped, 0);
     assert.strictEqual(stats.failed.length, 0);
     assert.ok(fs.existsSync(path.join(fixture.dest, 'nested', 'file.txt')));
@@ -38,6 +39,7 @@ test('skips files that already exist while copying new ones', (t) => {
     copyDirectorySkippingExisting(fixture.src, fixture.dest, stats);
 
     assert.strictEqual(stats.created, 1);
+    assert.strictEqual(stats.updated, 0);
     assert.strictEqual(stats.skipped, 1);
     assert.strictEqual(stats.failed.length, 0);
     assert.strictEqual(fs.readFileSync(keepDest, 'utf-8'), 'custom');
@@ -62,6 +64,7 @@ test('records failures without stopping the rest of the copy', (t) => {
     copyDirectorySkippingExisting(fixture.src, fixture.dest, stats, undefined, { copyFn: failingCopy });
 
     assert.strictEqual(stats.created, 1);
+    assert.strictEqual(stats.updated, 0);
     assert.strictEqual(stats.skipped, 0);
     assert.strictEqual(stats.failed.length, 1);
     assert.strictEqual(stats.failed[0].relativePath, 'fail.md');

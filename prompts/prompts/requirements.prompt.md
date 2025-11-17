@@ -7,7 +7,7 @@ policyMetadata:
       tool: kiro_create_requirements
       description: Start or update requirements for the provided spec slug
       requiresConsent: true
-      consentPhrase: "@kiro continue autonomously"
+      consentPhrase: "continue autonomously"
       requiresLLM: true
       intentFields:
         - specSlug

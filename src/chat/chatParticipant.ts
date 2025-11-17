@@ -11,8 +11,6 @@ type ChatAccessHandle = {
     sendChatMessage(message: string): Promise<void>;
 };
 
-type VSCodeWithLM = typeof vscode & { lm?: typeof vscode.lm };
-
 export class ChatParticipant {
     private readonly copilotParticipantIds = ['github.copilot.chat', 'github.copilot', 'copilot'];
 
@@ -270,6 +268,12 @@ export class ChatParticipant {
         toolInput: string,
         stream: vscode.ChatResponseStream
     ): Promise<boolean> {
+        if (!this.canUseProgrammaticChat()) {
+            stream.markdown(
+                'ℹ️ This VS Code build does not expose the experimental chat API yet. Update to the latest Stable/Insiders or enable `workbench.experimental.chatApi` to allow automatic dispatch. Falling back to clipboard.\n'
+            );
+            return this.copyCommandToClipboard(toolInput, stream);
+        }
         try {
             const participant = await this.getCopilotChatAccess();
             await participant.sendChatMessage(toolInput);
@@ -278,18 +282,31 @@ export class ChatParticipant {
             const message = error instanceof Error ? error.message : String(error);
             console.warn(`[ChatParticipant] Failed to invoke ${toolName} automatically`, error);
             stream.markdown(`❌ Unable to invoke ${toolName} automatically: ${message}\n`);
-            stream.markdown('Attempting clipboard fallback...\n');
+            return this.copyCommandToClipboard(toolInput, stream);
+        }
+    }
 
-            try {
-                await vscode.env.clipboard.writeText(toolInput);
-                await vscode.commands.executeCommand('workbench.action.chat.open', { query: toolInput });
-                stream.markdown('⚠️ Copied the command to Copilot chat. If it does not appear, paste it manually.\n');
-                return true;
-            } catch (fallbackError) {
-                const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-                stream.markdown(`❌ Clipboard fallback failed: ${fallbackMessage}\n`);
-                return false;
-            }
+    private canUseProgrammaticChat(): boolean {
+        const chatApi = (vscode as typeof vscode & {
+            chat?: { requestChatAccess?: (id: string) => Promise<ChatAccessHandle> };
+        }).chat;
+        return Boolean(chatApi?.requestChatAccess);
+    }
+
+    private async copyCommandToClipboard(
+        toolInput: string,
+        stream: vscode.ChatResponseStream
+    ): Promise<boolean> {
+        stream.markdown('Attempting clipboard fallback...\n');
+        try {
+            await vscode.env.clipboard.writeText(toolInput);
+            await vscode.commands.executeCommand('workbench.action.chat.open', { query: toolInput });
+            stream.markdown('⚠️ Copied the command to Copilot chat. If it does not appear, paste it manually.\n');
+            return true;
+        } catch (fallbackError) {
+            const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            stream.markdown(`❌ Clipboard fallback failed: ${fallbackMessage}\n`);
+            return false;
         }
     }
 

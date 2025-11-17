@@ -208,7 +208,7 @@ interface LLMRunResult {
 autonomyPolicyVersion: "2025.11"
 approvedActions:
   - id: executeTask.next
-    consentPhrase: "@kiro continue autonomously"
+    consentPhrase: "continue autonomously"
     description: "Run the next unchecked task in the active spec"
   - id: executeTask.retry
     consentPhrase: "@kiro retry autonomously"
@@ -221,7 +221,7 @@ approvedActions:
 {
   "version": "2025.11",
   "consent": {
-    "phrase": "@kiro continue autonomously",
+    "phrase": "continue autonomously",
     "expiresMinutes": 30
   },
   "actions": [

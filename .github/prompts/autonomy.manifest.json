@@ -1,7 +1,7 @@
 {
   "version": "2025.11",
   "consent": {
-    "phrase": "@kiro continue autonomously",
+    "phrase": "continue autonomously",
     "expiresMinutes": 30
   },
   "actions": [

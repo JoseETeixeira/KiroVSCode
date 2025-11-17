@@ -246,6 +246,13 @@ export function activate(context: vscode.ExtensionContext) {
                     const configResult = await setupService.setupMCPConfig(workspacePath);
 
                     if (configResult.success) {
+                        const chatApiResult = setupService.ensureChatApiSetting(workspacePath);
+                        if (!chatApiResult.success && chatApiResult.message) {
+                            vscode.window.showWarningMessage(chatApiResult.message);
+                        } else if (chatApiResult.updated) {
+                            vscode.window.showInformationMessage('Enabled experimental chat API for Kiro automation.');
+                        }
+
                         vscode.window.showInformationMessage(
                             '✓ Kiro setup complete! Check the terminal for installation progress. You may need to restart VS Code.',
                             'Restart Now'

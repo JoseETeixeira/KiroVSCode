@@ -6,11 +6,12 @@ import { copyDirectorySkippingExisting, CopyStats, createCopyStats } from './pro
 interface PromptCopyDetails {
     prompts: CopyStats;
     instructions: CopyStats;
+    agents: CopyStats;
     autonomy?: AutonomyCopyDetails;
     failureCount: number;
 }
 
-type AutonomyCopyStatus = 'missing' | 'created' | 'skipped' | 'failed';
+type AutonomyCopyStatus = 'missing' | 'created' | 'updated' | 'skipped' | 'failed';
 
 interface AutonomyCopyDetails {
     version?: string;
@@ -100,6 +101,7 @@ export class SetupService {
         const githubRoot = path.join(workspacePath, '.github');
         const githubInstructionsPath = path.join(githubRoot, 'instructions');
         const githubPromptsPath = path.join(githubRoot, 'prompts');
+        const githubAgentsPath = path.join(githubRoot, 'agents');
 
         try {
             if (!fs.existsSync(extensionPromptsPath)) {
@@ -118,9 +120,13 @@ export class SetupService {
             if (!fs.existsSync(githubPromptsPath)) {
                 fs.mkdirSync(githubPromptsPath, { recursive: true });
             }
+            if (!fs.existsSync(githubAgentsPath)) {
+                fs.mkdirSync(githubAgentsPath, { recursive: true });
+            }
 
             const instructionStats = createCopyStats();
             const promptStats = createCopyStats();
+            const agentStats = createCopyStats();
             const autonomyDetails: AutonomyCopyDetails = {
                 version: undefined,
                 manifestStatus: 'missing',
@@ -141,16 +147,22 @@ export class SetupService {
                 this.copyFlatFiles(extensionPromptsPath, githubPromptsPath, '.prompt.md', promptStats);
             }
 
+            const agentsSource = path.join(extensionPromptsPath, 'agents');
+            if (fs.existsSync(agentsSource)) {
+                copyDirectorySkippingExisting(agentsSource, githubAgentsPath, agentStats, githubAgentsPath);
+            }
+
             const autonomyManifestSource = path.join(extensionPromptsPath, 'autonomy.manifest.json');
             if (fs.existsSync(autonomyManifestSource)) {
                 const manifestDestination = path.join(githubPromptsPath, 'autonomy.manifest.json');
                 autonomyDetails.version = this.readAutonomyVersion(autonomyManifestSource) ?? autonomyDetails.version;
+                const existed = fs.existsSync(manifestDestination);
                 try {
-                    if (fs.existsSync(manifestDestination)) {
-                        promptStats.skipped++;
-                        autonomyDetails.manifestStatus = 'skipped';
+                    fs.copyFileSync(autonomyManifestSource, manifestDestination);
+                    if (existed) {
+                        promptStats.updated++;
+                        autonomyDetails.manifestStatus = 'updated';
                     } else {
-                        fs.copyFileSync(autonomyManifestSource, manifestDestination);
                         promptStats.created++;
                         autonomyDetails.manifestStatus = 'created';
                     }
@@ -167,12 +179,13 @@ export class SetupService {
             if (fs.existsSync(autonomyVersionSource)) {
                 const versionDestination = path.join(githubPromptsPath, 'autonomy-version.json');
                 autonomyDetails.version = autonomyDetails.version ?? this.readAutonomyVersion(autonomyVersionSource);
+                const existed = fs.existsSync(versionDestination);
                 try {
-                    if (fs.existsSync(versionDestination)) {
-                        promptStats.skipped++;
-                        autonomyDetails.versionFileStatus = 'skipped';
+                    fs.copyFileSync(autonomyVersionSource, versionDestination);
+                    if (existed) {
+                        promptStats.updated++;
+                        autonomyDetails.versionFileStatus = 'updated';
                     } else {
-                        fs.copyFileSync(autonomyVersionSource, versionDestination);
                         promptStats.created++;
                         autonomyDetails.versionFileStatus = 'created';
                     }
@@ -185,12 +198,16 @@ export class SetupService {
                 }
             }
 
-            const failures = [...instructionStats.failed, ...promptStats.failed];
+            const failures = [...instructionStats.failed, ...promptStats.failed, ...agentStats.failed];
             const failureCount = failures.length;
 
+            const formatStats = (label: string, stats: CopyStats): string =>
+                `${label}: ${stats.created} created, ${stats.updated} updated, ${stats.skipped} skipped`;
+
             const messageParts = [
-                `Prompts: ${promptStats.created} created, ${promptStats.skipped} skipped`,
-                `Instructions: ${instructionStats.created} created, ${instructionStats.skipped} skipped`
+                formatStats('Prompts', promptStats),
+                formatStats('Instructions', instructionStats),
+                formatStats('Agents', agentStats)
             ];
 
             if (
@@ -218,6 +235,7 @@ export class SetupService {
                 details: {
                     prompts: promptStats,
                     instructions: instructionStats,
+                    agents: agentStats,
                     autonomy: autonomyDetails,
                     failureCount
                 }
@@ -234,12 +252,11 @@ export class SetupService {
      * Setup MCP configuration
      */
     async setupMCPConfig(workspacePath: string): Promise<{ success: boolean; message: string }> {
-        // Try workspace-level config first
         const kiroSettingsPath = path.join(workspacePath, '.vscode');
         const workspaceMcpPath = path.join(kiroSettingsPath, 'mcp.json');
 
-        // Fallback to user-level config if workspace config fails
-        const userMcpPath = path.join(process.env.APPDATA || process.env.HOME || '', '.vscode', 'mcp.json');
+        const appDataRoot = process.env.APPDATA || process.env.HOME;
+        const userMcpPath = appDataRoot ? path.join(appDataRoot, '.vscode', 'mcp.json') : undefined;
 
         const mcpServerDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
 
@@ -269,66 +286,95 @@ export class SetupService {
             }
         };
 
+        const envSummary = copilotToken
+            ? 'Copilot auth token injected for LLM bridge.'
+            : 'Configured workspace default model for MCP LLM bridge; provide Copilot auth to enable direct LLM calls.';
+
         try {
-            // Try workspace-level config first
-            let configPath = workspaceMcpPath;
-            let configDir = kiroSettingsPath;
-            let isWorkspaceLevel = true;
-
-            // If we have a token, prefer writing to the user-level config so we don't commit secrets
-            if (copilotToken) {
-                configPath = userMcpPath;
-                configDir = path.dirname(userMcpPath);
-                isWorkspaceLevel = false;
-            }
-
-            // Check if we can create workspace-level config
-            try {
-                if (!fs.existsSync(configDir)) {
-                    fs.mkdirSync(configDir, { recursive: true });
-                }
-            } catch (workspaceError) {
-                // If workspace-level fails, use user-level
-                console.warn('Cannot create workspace-level config, using user-level:', workspaceError);
-                configPath = userMcpPath;
-                configDir = path.dirname(userMcpPath);
-                isWorkspaceLevel = false;
-            }
-
-            // Read existing config if it exists
-            let existingConfig: { servers?: Record<string, unknown> } = {};
-            if (fs.existsSync(configPath)) {
-                const content = fs.readFileSync(configPath, 'utf-8');
-                existingConfig = JSON.parse(content);
-            }
-
-            // Merge configs
-            existingConfig.servers = existingConfig.servers || {};
-            existingConfig.servers.kiro = mcpConfig.servers.kiro;
-
-            // Ensure directory exists
-            if (!fs.existsSync(configDir)) {
-                fs.mkdirSync(configDir, { recursive: true });
-            }
-
-            // Write config
-            fs.writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
-
-            const level = isWorkspaceLevel ? 'workspace (.vscode/mcp.json)' : 'user-level';
-            const envSummary = copilotToken
-                ? 'Copilot auth token injected for LLM bridge.'
-                : 'Configured workspace default model for MCP LLM bridge; provide Copilot auth to enable direct LLM calls.';
+            this.writeMcpConfigFile(workspaceMcpPath, mcpConfig);
             return {
                 success: true,
-                message: `MCP configuration updated at ${level}. ${envSummary} You may need to restart VS Code.`
+                message: `MCP configuration updated at workspace (.vscode/mcp.json). ${envSummary} You may need to restart VS Code.`
             };
+        } catch (workspaceError) {
+            console.warn('[SetupService] Workspace MCP config failed, attempting user-level fallback.', workspaceError);
+            if (userMcpPath) {
+                try {
+                    this.writeMcpConfigFile(userMcpPath, mcpConfig);
+                    return {
+                        success: true,
+                        message: `Workspace MCP config unavailable (${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}). Fallback to user-level config succeeded. ${envSummary}`
+                    };
+                } catch (userError) {
+                    return {
+                        success: false,
+                        message: `Failed to update workspace MCP config (${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}), and user-level fallback also failed (${userError instanceof Error ? userError.message : String(userError)}).`
+                    };
+                }
+            }
 
+            return {
+                success: false,
+                message: `Failed to update MCP config: ${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}`
+            };
+        }
+    }
+
+    ensureChatApiSetting(workspacePath: string): { success: boolean; updated: boolean; message?: string } {
+        try {
+            const settingsDir = path.join(workspacePath, '.vscode');
+            const settingsPath = path.join(settingsDir, 'settings.json');
+
+            let settings: Record<string, unknown> = {};
+            if (fs.existsSync(settingsPath)) {
+                try {
+                    const raw = fs.readFileSync(settingsPath, 'utf-8');
+                    settings = JSON.parse(raw) as Record<string, unknown>;
+                } catch (error) {
+                    return {
+                        success: false,
+                        updated: false,
+                        message: `Unable to parse ${path.relative(workspacePath, settingsPath)}: ${error instanceof Error ? error.message : String(error)}`
+                    };
+                }
+            }
+
+            if (settings['workbench.experimental.chatApi'] === true) {
+                return { success: true, updated: false };
+            }
+
+            settings['workbench.experimental.chatApi'] = true;
+            if (!fs.existsSync(settingsDir)) {
+                fs.mkdirSync(settingsDir, { recursive: true });
+            }
+            fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+
+            return { success: true, updated: true };
         } catch (error) {
             return {
                 success: false,
-                message: `Failed to update MCP config: ${error instanceof Error ? error.message : String(error)}`
+                updated: false,
+                message: `Failed to update VS Code settings: ${error instanceof Error ? error.message : String(error)}`
             };
         }
+    }
+
+    private writeMcpConfigFile(configPath: string, config: { servers: Record<string, unknown> }): void {
+        const configDir = path.dirname(configPath);
+        if (!fs.existsSync(configDir)) {
+            fs.mkdirSync(configDir, { recursive: true });
+        }
+
+        let existingConfig: { servers?: Record<string, unknown> } = {};
+        if (fs.existsSync(configPath)) {
+            const content = fs.readFileSync(configPath, 'utf-8');
+            existingConfig = JSON.parse(content);
+        }
+
+        existingConfig.servers = existingConfig.servers || {};
+        existingConfig.servers.kiro = config.servers.kiro;
+
+        fs.writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
     }
 
     private async getCopilotAuthToken(): Promise<string | undefined> {
