@@ -99,7 +99,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     }
 
     private handleIntentStatusEvent(event: IntentStatusEvent): void {
-        const specSlug = event.payload?.specSlug;
+        const specSlug = event.payload?.specSlug ?? event.specSlug;
         if (!specSlug) {
             return;
         }
@@ -107,7 +107,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         this.intentStatusBySpec.set(specSlug, event);
         this.refresh();
 
-        if (event.stage === 'dispatched' || event.stage === 'failed' || event.stage === 'cancelled') {
+        if (event.stage === 'dispatched' || event.stage === 'failed' || event.stage === 'cancelled' || event.stage === 'completed') {
             setTimeout(() => {
                 const current = this.intentStatusBySpec.get(specSlug);
                 if (current && current.timestamp === event.timestamp) {
@@ -397,6 +397,18 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                 return {
                     state: 'cancelled',
                     label: 'Autonomy cancelled',
+                    tooltip: event.message
+                };
+            case 'running':
+                return {
+                    state: 'running',
+                    label: 'Autonomy running',
+                    tooltip: event.message
+                };
+            case 'completed':
+                return {
+                    state: 'ready',
+                    label: 'Autonomy completed',
                     tooltip: event.message
                 };
             case 'dispatched':

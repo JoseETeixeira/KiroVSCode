@@ -7,7 +7,15 @@ import { SetupService } from '../services/setupService';
 import { AutonomyPolicyService, AutonomyAction, AutonomyPolicy } from '../services/autonomyPolicyService';
 import { IntentPayload } from '../services/intentService';
 
+type ChatAccessHandle = {
+    sendChatMessage(message: string): Promise<void>;
+};
+
+type VSCodeWithLM = typeof vscode & { lm?: typeof vscode.lm };
+
 export class ChatParticipant {
+    private readonly copilotParticipantIds = ['github.copilot.chat', 'github.copilot', 'copilot'];
+
     constructor(
         private modeManager: ModeManager,
         private promptManager: PromptManager,
@@ -24,7 +32,8 @@ export class ChatParticipant {
         );
 
         // Set metadata
-        participant.iconPath = vscode.Uri.file('resources/kiro-icon.svg');
+        const iconUri = vscode.Uri.joinPath(this.extensionContext.extensionUri, 'resources', 'kiro-icon.svg');
+        participant.iconPath = iconUri;
 
         return participant;
     }
@@ -40,7 +49,7 @@ export class ChatParticipant {
     ): Promise<void> {
         // Handle explicit slash commands first
         if (request.command) {
-            await this.handleSlashCommand(request, stream);
+            await this.handleSlashCommand(request, stream, token);
             return;
         }
 
@@ -53,7 +62,8 @@ export class ChatParticipant {
      */
     private async handleSlashCommand(
         request: vscode.ChatRequest,
-        stream: vscode.ChatResponseStream
+        stream: vscode.ChatResponseStream,
+        token?: vscode.CancellationToken // eslint-disable-line @typescript-eslint/no-unused-vars
     ): Promise<void> {
         switch (request.command) {
             case 'vibe':
@@ -66,7 +76,7 @@ export class ChatParticipant {
                 await this.handleTaskCommand(request, stream);
                 break;
             case 'intent':
-                await this.handleIntentCommand(request, stream);
+                await this.handleIntentCommand(request, stream, token);
                 break;
             default:
                 stream.markdown(`Unknown command: /${request.command}\n`);
@@ -75,7 +85,8 @@ export class ChatParticipant {
 
     private async handleIntentCommand(
         request: vscode.ChatRequest,
-        stream: vscode.ChatResponseStream
+        stream: vscode.ChatResponseStream,
+        token?: vscode.CancellationToken // eslint-disable-line @typescript-eslint/no-unused-vars
     ): Promise<void> {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
@@ -116,16 +127,18 @@ export class ChatParticipant {
             : 'Autonomy: manual fallback (no consent token).';
         stream.markdown(`${autonomyState}\n`);
 
-        const command = this.buildIntentCommand(validation.action, payload);
-        stream.markdown('- `dispatching` Forwarding intent to Copilot...\n');
+        const { displayText, toolInput } = this.buildIntentCommand(validation.action, payload);
 
-        try {
-            await vscode.env.clipboard.writeText(command);
-            await vscode.commands.executeCommand('workbench.action.chat.open', { query: command });
-            stream.markdown('- `dispatched` MCP tools received the intent. Monitor Copilot for progress.\n');
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            stream.markdown(`- \`failed\` Unable to contact Copilot: ${message}\n`);
+        stream.markdown('- `dispatching` Invoking MCP tool via language model...\n');
+        stream.markdown('Command:\n');
+        stream.markdown('```text\n');
+        stream.markdown(`${displayText}\n`);
+        stream.markdown('```\n');
+
+        const success = await this.invokeKiroTool(validation.action.tool, toolInput, stream);
+
+        if (success) {
+            stream.markdown('- `completed` Intent dispatched. Monitor status updates for progress.\n');
         }
     }
 
@@ -214,7 +227,10 @@ export class ChatParticipant {
         return true;
     }
 
-    private buildIntentCommand(action: AutonomyAction, payload: IntentPayload): string {
+    private buildIntentCommand(
+        action: AutonomyAction,
+        payload: IntentPayload
+    ): { displayText: string; toolInput: string } {
         const lines: string[] = [
             `Intent action: ${payload.actionId}`,
             `Policy version: ${payload.policyVersion ?? 'unknown'}`,
@@ -233,8 +249,69 @@ export class ChatParticipant {
             lines.push(`Metadata: ${JSON.stringify(payload.metadata)}`);
         }
 
-        const summary = lines.join('\n').replace(/"/g, '\\"');
-        return `Use ${action.tool} with command: "${summary}"`;
+        const summary = lines.join('\n');
+        return {
+            displayText: this.formatToolDisplayCommand(action.tool, summary),
+            toolInput: this.formatToolDispatchCommand(action.tool, summary)
+        };
+    }
+
+    private formatToolDisplayCommand(toolName: string, command: string): string {
+        return `Use ${toolName} with command:\n${command}`;
+    }
+
+    private formatToolDispatchCommand(toolName: string, command: string): string {
+        const escaped = command.replace(/"/g, '\\"');
+        return `Use ${toolName} with command: "${escaped}"`;
+    }
+
+    private async invokeKiroTool(
+        toolName: string,
+        toolInput: string,
+        stream: vscode.ChatResponseStream
+    ): Promise<boolean> {
+        try {
+            const participant = await this.getCopilotChatAccess();
+            await participant.sendChatMessage(toolInput);
+            return true;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.warn(`[ChatParticipant] Failed to invoke ${toolName} automatically`, error);
+            stream.markdown(`❌ Unable to invoke ${toolName} automatically: ${message}\n`);
+            stream.markdown('Attempting clipboard fallback...\n');
+
+            try {
+                await vscode.env.clipboard.writeText(toolInput);
+                await vscode.commands.executeCommand('workbench.action.chat.open', { query: toolInput });
+                stream.markdown('⚠️ Copied the command to Copilot chat. If it does not appear, paste it manually.\n');
+                return true;
+            } catch (fallbackError) {
+                const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+                stream.markdown(`❌ Clipboard fallback failed: ${fallbackMessage}\n`);
+                return false;
+            }
+        }
+    }
+
+    private async getCopilotChatAccess(): Promise<ChatAccessHandle> {
+        const chatApi = (vscode as typeof vscode & {
+            chat?: { requestChatAccess?: (id: string) => Promise<ChatAccessHandle> };
+        }).chat;
+
+        if (!chatApi?.requestChatAccess) {
+            throw new Error('VS Code chat APIs are unavailable in this build.');
+        }
+
+        let lastError: unknown;
+        for (const participantId of this.copilotParticipantIds) {
+            try {
+                return await chatApi.requestChatAccess(participantId);
+            } catch (error) {
+                lastError = error;
+            }
+        }
+
+        throw lastError ?? new Error('Unable to reach the GitHub Copilot chat participant.');
     }
 
     private async pathExists(uri: vscode.Uri): Promise<boolean> {
@@ -298,32 +375,27 @@ export class ChatParticipant {
             return;
         }
 
-        // Build the Copilot command based on mode
-        let copilotCommand = '';
+        const toolName = mode === 'spec' ? 'kiro_create_requirements' : 'kiro_execute_task';
+        const prompt = request.prompt?.trim();
 
-        if (mode === 'vibe') {
-            copilotCommand = `Use kiro_execute_task with command: "${request.prompt}"`;
-        } else {
-            copilotCommand = `Use kiro_execute_task with command: "${request.prompt}"`;
+        if (!prompt) {
+            stream.markdown('⚠️ Unable to invoke the MCP tool because the request prompt was empty.\n');
+            return;
         }
 
-        stream.markdown(`Sending to Copilot with Kiro MCP tools...\n\n`);
-        stream.markdown(`Command: \`${copilotCommand}\`\n\n`);
+        const displayCommand = this.formatToolDisplayCommand(toolName, prompt);
+        const dispatchCommand = this.formatToolDispatchCommand(toolName, prompt);
 
-        try {
-            // Copy command to clipboard
-            await vscode.env.clipboard.writeText(copilotCommand);
+        stream.markdown('Sending to Copilot with Kiro MCP tools...\n\n');
+        stream.markdown('Command:\n');
+        stream.markdown('```text\n');
+        stream.markdown(`${displayCommand}\n`);
+        stream.markdown('```\n\n');
 
-            // Open Copilot Chat
-            await vscode.commands.executeCommand('workbench.action.chat.open', {
-                query: copilotCommand
-            });
+        const success = await this.invokeKiroTool(toolName, dispatchCommand, stream);
 
-            stream.markdown('✓ Kiro command sent to Copilot! The MCP server will inject the appropriate prompt.\n');
-
-        } catch (err) {
-            console.error(`[ChatParticipant] Failed to open Copilot:`, err);
-            stream.markdown(`❌ Failed to open Copilot: ${err instanceof Error ? err.message : String(err)}\n`);
+        if (success) {
+            stream.markdown('✅ MCP tool invocation finished. Watch for status updates above.\n');
         }
     }
 

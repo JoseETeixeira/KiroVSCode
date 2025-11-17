@@ -10,13 +10,16 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+  PromptContextDescriptor,
+  runPromptWithLLM,
+  RunPromptWithLLMResult,
+  LLMInvocationError,
+} from './runPromptWithLLM.js';
 
 type KiroMode = 'vibe' | 'spec';
 type PromptType = 'executeTask' | 'requirements';
+type IntentStage = 'queued' | 'running' | 'completed' | 'failed';
 
 interface KiroServerConfig {
   mode: KiroMode;
@@ -27,11 +30,21 @@ interface KiroServerConfig {
 interface TextContent {
   type: 'text';
   text: string;
+  [key: string]: unknown;
 }
 
 type ToolResponse = CallToolResult & {
   content: TextContent[];
 };
+
+interface StatusPayload {
+  stage: IntentStage;
+  message: string;
+  timestamp: string;
+  details?: Record<string, unknown>;
+  specSlug?: string;
+  tool?: string;
+}
 
 class KiroMCPServer {
   private readonly server: Server;
@@ -178,97 +191,104 @@ class KiroMCPServer {
     );
   }
 
-  private async loadPrompt(promptType: PromptType): Promise<string> {
-    const candidates = [
-      path.join(__dirname, '..', '..', '..', 'prompts', `${promptType}.prompt.md`),
-      this.config.promptsPath
-        ? path.join(this.config.promptsPath, `${promptType}.prompt.md`)
-        : undefined,
-      path.join(
-        process.env.APPDATA ?? process.env.HOME ?? '',
-        'Code',
-        'User',
-        'prompts',
-        `${promptType}.prompt.md`,
-      ),
-    ].filter((candidate): candidate is string => Boolean(candidate));
-
-    for (const promptPath of candidates) {
-      try {
-        const content = await fs.readFile(promptPath, 'utf-8');
-        console.error(`[Kiro MCP] Loaded prompt from: ${promptPath}`);
-        return content;
-      } catch {
-        continue;
-      }
-    }
-
-    throw new Error(`Failed to locate ${promptType}.prompt.md in any known location`);
-  }
-
   private async handleExecuteTask(command?: string): Promise<ToolResponse> {
     if (!command?.trim()) {
       throw new Error('The kiro_execute_task tool requires a non-empty command argument.');
     }
+    console.error(`[Kiro MCP] Executing task via MCP helper.`);
 
-    console.error(`[Kiro MCP] Executing task: ${command}`);
-    const executeTaskPrompt = await this.loadPrompt('executeTask');
+    const content: TextContent[] = [];
+    const specSlug = this.extractSpecSlug(command);
+    const actionId = 'executeTask.next';
+    content.push(
+      this.createStatusContent('queued', 'Preparing executeTask prompt.', {
+        tool: 'kiro_execute_task',
+        specSlug,
+        details: { actionId },
+      }),
+    );
+    content.push(
+      this.createStatusContent('running', 'Invoking Copilot LLM with executeTask template.', {
+        tool: 'kiro_execute_task',
+        specSlug,
+        details: { actionId },
+      }),
+    );
 
-    const fullPrompt = `${executeTaskPrompt}
+    try {
+      const llmResult = await this.invokePrompt('executeTask', command, specSlug);
+      content.push(
+        this.createStatusContent('completed', 'executeTask finished.', {
+          tool: 'kiro_execute_task',
+          specSlug,
+          details: this.buildSuccessDetails(llmResult, { actionId }),
+        }),
+      );
 
----
-
-# USER COMMAND (EXECUTE NOW)
-
-${command}
-
-IMPORTANT: You are receiving this through the Kiro MCP server, which has already loaded the executeTask workflow instructions above. Begin execution immediately by following the workflow:
-
-1. Read the tasks.md file to identify the target task
-2. Read ALL context files (design.md, requirements.md, .kiro/steering/)
-3. Summarize what you learned from each document
-4. Explain how the task relates to the design
-5. Execute the task by modifying the codebase
-6. Mark the task as complete in tasks.md
-
-Do NOT ask for permission or clarification. Start executing now.`;
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: fullPrompt,
-        },
-      ],
-    };
+      return { content };
+    } catch (error) {
+      content.push(
+        this.createStatusContent('failed', 'executeTask failed.', {
+          tool: 'kiro_execute_task',
+          specSlug,
+          details: this.buildErrorDetails(error, { actionId }),
+        }),
+      );
+      return {
+        content,
+        isError: true,
+      };
+    }
   }
 
   private async handleCreateRequirements(command?: string): Promise<ToolResponse> {
     if (!command?.trim()) {
       throw new Error('The kiro_create_requirements tool requires a non-empty command argument.');
     }
+    console.error('[Kiro MCP] Creating requirements via MCP helper.');
 
-    console.error(`[Kiro MCP] Creating requirements: ${command}`);
-    const requirementsPrompt = await this.loadPrompt('requirements');
+    const content: TextContent[] = [];
+    const specSlug = this.extractSpecSlug(command);
+    const actionId = 'createRequirements';
+    content.push(
+      this.createStatusContent('queued', 'Preparing requirements prompt.', {
+        tool: 'kiro_create_requirements',
+        specSlug,
+        details: { actionId },
+      }),
+    );
+    content.push(
+      this.createStatusContent('running', 'Invoking Copilot LLM with requirements template.', {
+        tool: 'kiro_create_requirements',
+        specSlug,
+        details: { actionId },
+      }),
+    );
 
-    const fullPrompt = `${requirementsPrompt}
+    try {
+      const llmResult = await this.invokePrompt('requirements', command, specSlug);
+      content.push(
+        this.createStatusContent('completed', 'requirements workflow finished.', {
+          tool: 'kiro_create_requirements',
+          specSlug,
+          details: this.buildSuccessDetails(llmResult, { actionId }),
+        }),
+      );
 
----
-
-# USER COMMAND
-
-${command}
-
-IMPORTANT: You are receiving this through the Kiro MCP server, which has already loaded the requirements workflow instructions above. Begin the requirements process immediately by following the workflow defined in the prompt.`;
-
-    return {
-      content: [
-        {
-          type: 'text',
-          text: fullPrompt,
-        },
-      ],
-    };
+      return { content };
+    } catch (error) {
+      content.push(
+        this.createStatusContent('failed', 'requirements workflow failed.', {
+          tool: 'kiro_create_requirements',
+          specSlug,
+          details: this.buildErrorDetails(error, { actionId }),
+        }),
+      );
+      return {
+        content,
+        isError: true,
+      };
+    }
   }
 
   private async handleSetMode(mode?: unknown): Promise<ToolResponse> {
@@ -307,10 +327,170 @@ IMPORTANT: You are receiving this through the Kiro MCP server, which has already
     };
   }
 
+  private createStatusContent(
+    stage: IntentStage,
+    message: string,
+    options?: { details?: Record<string, unknown>; specSlug?: string; tool?: string },
+  ): TextContent {
+    const payload: StatusPayload = {
+      stage,
+      message,
+      timestamp: new Date().toISOString(),
+      ...(options?.details ? { details: options.details } : {}),
+      ...(options?.specSlug ? { specSlug: options.specSlug } : {}),
+      ...(options?.tool ? { tool: options.tool } : {}),
+    };
+    void this.publishStatus(payload);
+    return {
+      type: 'text',
+      text: ['```json', JSON.stringify(payload, null, 2), '```'].join('\n'),
+    };
+  }
+
+  private buildSuccessDetails(
+    result: RunPromptWithLLMResult,
+    extra?: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      modelId: result.modelId,
+      llmResponse: result.llmResponse,
+      tokenUsage: result.tokenUsage,
+      latencyMs: result.latencyMs,
+      ...(extra ?? {}),
+    };
+  }
+
+  private buildErrorDetails(error: unknown, extra?: Record<string, unknown>): Record<string, unknown> {
+    if (error instanceof LLMInvocationError) {
+      return {
+        errorType: 'LLMInvocationError',
+        message: error.message,
+        status: error.status,
+        body: error.body,
+        ...(extra ?? {}),
+      };
+    }
+
+    if (error instanceof Error) {
+      return {
+        errorType: error.name,
+        message: error.message,
+        ...(extra ?? {}),
+      };
+    }
+
+    return {
+      errorType: 'UnknownError',
+      message: String(error),
+      ...(extra ?? {}),
+    };
+  }
+
+  private async invokePrompt(
+    promptId: PromptType,
+    command: string,
+    specSlug?: string,
+  ): Promise<RunPromptWithLLMResult> {
+    const contextFiles = this.buildContextDescriptors(specSlug);
+
+    return runPromptWithLLM({
+      promptId,
+      userMessage: command,
+      workspacePath: this.config.workspacePath,
+      promptsPath: this.config.promptsPath,
+      contextFiles,
+    });
+  }
+
+  private buildContextDescriptors(specSlug?: string): PromptContextDescriptor[] {
+    if (!this.config.workspacePath) {
+      return [];
+    }
+
+    const descriptors: PromptContextDescriptor[] = [...this.buildBaseContextDescriptors()];
+
+    if (specSlug) {
+      descriptors.push(
+        {
+          path: `.kiro/specs/${specSlug}/requirements.md`,
+          label: `${specSlug} requirements.md`,
+          required: false,
+        },
+        {
+          path: `.kiro/specs/${specSlug}/design.md`,
+          label: `${specSlug} design.md`,
+          required: false,
+        },
+        {
+          path: `.kiro/specs/${specSlug}/tasks.md`,
+          label: `${specSlug} tasks.md`,
+          required: false,
+        },
+      );
+    }
+
+    return descriptors;
+  }
+
+  private buildBaseContextDescriptors(): PromptContextDescriptor[] {
+    return [
+      {
+        path: '.kiro/steering/product.md',
+        label: 'Steering product.md',
+        required: true,
+      },
+      {
+        path: '.kiro/steering/structure.md',
+        label: 'Steering structure.md',
+        required: true,
+      },
+      {
+        path: '.kiro/steering/tech.md',
+        label: 'Steering tech.md',
+        required: true,
+      },
+    ];
+  }
+
+  private extractSpecSlug(command: string): string | undefined {
+    const patterns = [
+      /\*\*Spec:\*\*\s*([^\n\r]+)/i,
+      /Spec:\s*([^\n\r]+)/i,
+    ];
+
+    for (const pattern of patterns) {
+      const match = command.match(pattern);
+      if (match?.[1]) {
+        const sanitized = match[1].trim().replace(/[`*]/g, '').split(/\s+/)[0];
+        const slug = sanitized.replace(/[^a-z0-9-_]/gi, '').toLowerCase();
+        if (slug.length > 0) {
+          return slug;
+        }
+      }
+    }
+
+    return undefined;
+  }
+
   public async run(): Promise<void> {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('Kiro MCP Server running on stdio');
+  }
+
+  private async publishStatus(payload: StatusPayload): Promise<void> {
+    if (!this.config.workspacePath) {
+      return;
+    }
+
+    try {
+      const runtimeDir = path.join(this.config.workspacePath, '.kiro', 'runtime');
+      await fs.mkdir(runtimeDir, { recursive: true });
+      const statusPath = path.join(runtimeDir, 'intent-status.jsonl');
+      await fs.appendFile(statusPath, `${JSON.stringify(payload)}\n`, 'utf-8');
+    } catch (error) {
+      console.warn('[Kiro MCP] Failed to publish intent status payload', error);
+    }
   }
 }
 
