@@ -243,6 +243,9 @@ export class SetupService {
 
         const mcpServerDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
 
+        const copilotToken = await this.getCopilotAuthToken();
+        const envVars = this.buildMcpEnvVars(copilotToken);
+
         const mcpConfig = {
             servers: {
                 kiro: {
@@ -260,7 +263,8 @@ export class SetupService {
                         'kiro_create_requirements',
                         'kiro_set_mode',
                         'kiro_get_current_mode'
-                    ]
+                    ],
+                    env: envVars
                 }
             }
         };
@@ -270,6 +274,13 @@ export class SetupService {
             let configPath = workspaceMcpPath;
             let configDir = kiroSettingsPath;
             let isWorkspaceLevel = true;
+
+            // If we have a token, prefer writing to the user-level config so we don't commit secrets
+            if (copilotToken) {
+                configPath = userMcpPath;
+                configDir = path.dirname(userMcpPath);
+                isWorkspaceLevel = false;
+            }
 
             // Check if we can create workspace-level config
             try {
@@ -303,10 +314,13 @@ export class SetupService {
             // Write config
             fs.writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
 
-            const level = isWorkspaceLevel ? 'workspace (.kiro/settings/mcp.json)' : 'user-level';
+            const level = isWorkspaceLevel ? 'workspace (.vscode/mcp.json)' : 'user-level';
+            const envSummary = copilotToken
+                ? 'Copilot auth token injected for LLM bridge.'
+                : 'Configured workspace default model for MCP LLM bridge; provide Copilot auth to enable direct LLM calls.';
             return {
                 success: true,
-                message: `MCP configuration updated at ${level}. You may need to restart VS Code.`
+                message: `MCP configuration updated at ${level}. ${envSummary} You may need to restart VS Code.`
             };
 
         } catch (error) {
@@ -315,6 +329,40 @@ export class SetupService {
                 message: `Failed to update MCP config: ${error instanceof Error ? error.message : String(error)}`
             };
         }
+    }
+
+    private async getCopilotAuthToken(): Promise<string | undefined> {
+        try {
+            const session = await vscode.authentication.getSession('github', ['copilot'], { createIfNone: true });
+            return session?.accessToken;
+        } catch (error) {
+            console.warn('[SetupService] Unable to retrieve Copilot auth token for MCP server', error);
+            return undefined;
+        }
+    }
+
+    private buildMcpEnvVars(copilotToken?: string): Record<string, string> {
+        const envVars: Record<string, string> = {};
+
+        const defaultModel = this.getDefaultLLMModel();
+        if (defaultModel) {
+            envVars.KIRO_DEFAULT_MODEL = defaultModel;
+        }
+
+        if (copilotToken) {
+            envVars.KIRO_LLM_TOKEN = copilotToken;
+        }
+
+        return envVars;
+    }
+
+    private getDefaultLLMModel(): string {
+        const config = vscode.workspace.getConfiguration('kiroCopilot');
+        const configuredModel = config.get<string>('defaultLanguageModel');
+        if (configuredModel && typeof configuredModel === 'string' && configuredModel.trim().length > 0) {
+            return configuredModel.trim();
+        }
+        return 'copilot-gpt-5';
     }
 
     /**

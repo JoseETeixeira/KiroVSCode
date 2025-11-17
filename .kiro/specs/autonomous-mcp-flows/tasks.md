@@ -26,12 +26,13 @@ _Traceability_: R1–R4 reference the numbered requirements in `requirements.md`
 [x] **T4.2** Update command contributions (`package.json`) and any tree item context menus so users can trigger the new actions.
 
 ## Phase 5 – MCP Server LLM Bridge (R3, R4)
-[ ] **T5.1** Implement a reusable helper inside `mcp-server/src` (e.g., `runPromptWithLLM`) that accepts prompt IDs + user message, invokes the hosted LLM, and returns response text + telemetry to callers.
+[x] **T5.1** Implement a reusable helper inside `mcp-server/src` (e.g., `runPromptWithLLM`) that accepts prompt IDs + user message, invokes the hosted LLM, and returns response text + telemetry to callers.
+[x] **T5.1a** Inject the authenticated Copilot token and default model into the MCP server environment (Option 1) so `runPromptWithLLM` can call the same LLM used by the extension without manual env setup.
 [ ] **T5.2** Update existing MCP tool handlers (`kiro_execute_task`, `kiro_create_requirements`, `kiro_create_tasks`, etc.) to call the helper, stream status updates, and embed `llmResponse` plus token usage within their result envelopes.
 
 ## Phase 6 – Extension ⇄ MCP Wiring (R3, R4)
 [ ] **T6.1** Define an intent-status event channel (VS Code `EventEmitter` or similar) so the MCP responses feed back into `IntentService` and UI components.
-[ ] **T6.2** Ensure fallback behavior: when the MCP server rejects an intent (version mismatch, consent missing, LLM failure), surface actionable warnings and revert to the manual clipboard flow.
+[ ] **T6.2** Ensure fallback behavior: when the MCP server rejects an intent (version mismatch, consent missing, LLM failure), surface actionable warnings.
 
 ## Phase 7 – Testing & Documentation (R1–R4)
 [ ] **T7.1** Add unit tests covering `AutonomyPolicyService`, `IntentService`, and the new MCP LLM helper (happy paths + error handling).
