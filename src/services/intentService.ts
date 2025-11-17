@@ -79,45 +79,11 @@ export class IntentService implements vscode.Disposable {
             return;
         }
 
-        this.emitStatus(workspaceFolder, options.actionId, 'queued', 'Preparing intent payload.');
+        const disabledMessage = 'Autonomous intents are disabled. Use the prompt templates under .github/prompts to run workflows manually.';
+        this.emitStatus(workspaceFolder, options.actionId, 'cancelled', disabledMessage);
+        vscode.window.showWarningMessage(disabledMessage);
+        return;
 
-        const { policy, error } = await this.autonomyPolicyService.getPolicy(workspaceFolder);
-        if (!policy) {
-            this.emitStatus(workspaceFolder, options.actionId, 'failed', error ?? 'Autonomy policy unavailable.');
-            vscode.window.showErrorMessage(error ?? 'Autonomy policy unavailable. Run the setup command first.');
-            return;
-        }
-
-        const action = await this.autonomyPolicyService.getAction(workspaceFolder, options.actionId);
-        if (!action) {
-            const message = `Autonomy action "${options.actionId}" is not defined in the manifest.`;
-            this.emitStatus(workspaceFolder, options.actionId, 'failed', message);
-            vscode.window.showErrorMessage(message);
-            return;
-        }
-
-        const consent = await this.ensureConsent(workspaceFolder, action, policy);
-        if (action.requiresConsent && !consent) {
-            this.emitStatus(workspaceFolder, options.actionId, 'cancelled', 'Consent is required but was not granted.');
-            return;
-        }
-
-        const payload = this.buildPayload({
-            options,
-            policyVersion: policy.version,
-            consentToken: consent ? this.encodeConsentToken(consent) : undefined
-        });
-
-        this.emitStatus(workspaceFolder, options.actionId, 'dispatching', 'Dispatching intent to @kiro.', payload);
-
-        try {
-            await this.sendToChat(payload);
-            this.emitStatus(workspaceFolder, options.actionId, 'dispatched', 'Intent dispatched successfully.', payload);
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            this.emitStatus(workspaceFolder, options.actionId, 'failed', message, payload, message);
-            vscode.window.showErrorMessage(`Failed to dispatch intent: ${message}`);
-        }
     }
 
     async revokeConsent(workspaceFolder?: vscode.WorkspaceFolder, actionId?: string): Promise<void> {
@@ -354,14 +320,11 @@ export class IntentService implements vscode.Disposable {
             return payload.details.actionId;
         }
 
-        switch (payload.tool) {
-            case 'kiro_execute_task':
-                return 'executeTask.next';
-            case 'kiro_create_requirements':
-                return 'createRequirements';
-            default:
-                return payload.tool ?? 'unknown';
+        if (payload.tool?.startsWith('kiro_')) {
+            return payload.tool.substring('kiro_'.length);
         }
+
+        return payload.tool ?? 'unknown';
     }
 
     private buildRuntimeKey(payload: RuntimeStatusPayload): string {

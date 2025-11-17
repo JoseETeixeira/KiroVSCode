@@ -1,31 +1,5 @@
+---
 agent: kiro
-policyMetadata:
-   version: "2025.11"
-   llmExpectation: "Call runPromptWithLLM using userMessage and include llmResponse plus tokenUsage in the MCP response envelope."
-   supportedActions:
-      - id: executeTask.next
-         tool: kiro_execute_task
-         description: Run the next unchecked task in the active spec
-         requiresConsent: true
-         consentPhrase: "continue autonomously"
-         requiresLLM: true
-         intentFields:
-            - specSlug
-            - instructionsVersion
-            - consentToken
-            - userMessage
-      - id: executeTask.retry
-         tool: kiro_execute_task
-         description: Retry the previously failed task for the active spec
-         requiresConsent: true
-         consentPhrase: "continue autonomously"
-         requiresLLM: true
-         intentFields:
-            - specSlug
-            - taskId
-            - instructionsVersion
-            - consentToken
-            - userMessage
 ---
 # **Task Execution Guide**
 

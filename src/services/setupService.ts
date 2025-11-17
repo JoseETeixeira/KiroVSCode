@@ -23,15 +23,6 @@ export class SetupService {
     constructor(private extensionContext: vscode.ExtensionContext) {}
 
     /**
-     * Check if MCP server is already set up
-     */
-    isMCPServerSetup(workspacePath: string): boolean {
-        const workspaceDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
-        const workspaceNodeModules = path.join(workspacePath, 'mcp-server', 'node_modules');
-        return fs.existsSync(workspaceDistPath) && fs.existsSync(workspaceNodeModules);
-    }
-
-    /**
      * Check if prompt files are already set up
      */
     arePromptFilesSetup(workspacePath: string): boolean {
@@ -47,48 +38,6 @@ export class SetupService {
         const promptsFiles = fs.readdirSync(githubPromptsPath);
 
         return instructionsFiles.length > 0 && promptsFiles.length > 0;
-    }
-
-    /**
-     * Setup MCP server in workspace
-     */
-    async setupMCPServer(workspacePath: string): Promise<{ success: boolean; message: string }> {
-        const workspaceMcpPath = path.join(workspacePath, 'mcp-server');
-        const extensionMcpPath = path.join(this.extensionContext.extensionPath, 'mcp-server');
-        const extensionDistPath = path.join(extensionMcpPath, 'dist', 'index.js');
-
-        try {
-            // Check if extension's MCP server is built
-            if (!fs.existsSync(extensionDistPath)) {
-                return {
-                    success: false,
-                    message: 'Extension MCP server not found. Please rebuild the extension.'
-                };
-            }
-
-            // Copy the MCP server directory (excluding node_modules)
-            this.copyDirectory(extensionMcpPath, workspaceMcpPath);
-
-            // Install dependencies
-            const terminal = vscode.window.createTerminal({
-                name: 'Kiro MCP Setup',
-                cwd: workspaceMcpPath
-            });
-
-            terminal.sendText('npm install');
-            terminal.show();
-
-            return {
-                success: true,
-                message: 'MCP server copied. Installing dependencies in terminal...'
-            };
-
-        } catch (error) {
-            return {
-                success: false,
-                message: `Failed to setup MCP server: ${error instanceof Error ? error.message : String(error)}`
-            };
-        }
     }
 
     /**
@@ -248,78 +197,6 @@ export class SetupService {
         }
     }
 
-    /**
-     * Setup MCP configuration
-     */
-    async setupMCPConfig(workspacePath: string): Promise<{ success: boolean; message: string }> {
-        const kiroSettingsPath = path.join(workspacePath, '.vscode');
-        const workspaceMcpPath = path.join(kiroSettingsPath, 'mcp.json');
-
-        const appDataRoot = process.env.APPDATA || process.env.HOME;
-        const userMcpPath = appDataRoot ? path.join(appDataRoot, '.vscode', 'mcp.json') : undefined;
-
-        const mcpServerDistPath = path.join(workspacePath, 'mcp-server', 'dist', 'index.js');
-
-        const copilotToken = await this.getCopilotAuthToken();
-        const envVars = this.buildMcpEnvVars(copilotToken);
-
-        const mcpConfig = {
-            servers: {
-                kiro: {
-                    command: 'node',
-                    args: [
-                        mcpServerDistPath,
-                        '--workspace',
-                        workspacePath,
-                        '--prompts',
-                        path.join(workspacePath, '.github', 'prompts')
-                    ],
-                    disabled: false,
-                    autoApprove: [
-                        'kiro_execute_task',
-                        'kiro_create_requirements',
-                        'kiro_set_mode',
-                        'kiro_get_current_mode'
-                    ],
-                    env: envVars
-                }
-            }
-        };
-
-        const envSummary = copilotToken
-            ? 'Copilot auth token injected for LLM bridge.'
-            : 'Configured workspace default model for MCP LLM bridge; provide Copilot auth to enable direct LLM calls.';
-
-        try {
-            this.writeMcpConfigFile(workspaceMcpPath, mcpConfig);
-            return {
-                success: true,
-                message: `MCP configuration updated at workspace (.vscode/mcp.json). ${envSummary} You may need to restart VS Code.`
-            };
-        } catch (workspaceError) {
-            console.warn('[SetupService] Workspace MCP config failed, attempting user-level fallback.', workspaceError);
-            if (userMcpPath) {
-                try {
-                    this.writeMcpConfigFile(userMcpPath, mcpConfig);
-                    return {
-                        success: true,
-                        message: `Workspace MCP config unavailable (${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}). Fallback to user-level config succeeded. ${envSummary}`
-                    };
-                } catch (userError) {
-                    return {
-                        success: false,
-                        message: `Failed to update workspace MCP config (${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}), and user-level fallback also failed (${userError instanceof Error ? userError.message : String(userError)}).`
-                    };
-                }
-            }
-
-            return {
-                success: false,
-                message: `Failed to update MCP config: ${workspaceError instanceof Error ? workspaceError.message : String(workspaceError)}`
-            };
-        }
-    }
-
     ensureChatApiSetting(workspacePath: string): { success: boolean; updated: boolean; message?: string } {
         try {
             const settingsDir = path.join(workspacePath, '.vscode');
@@ -356,83 +233,6 @@ export class SetupService {
                 updated: false,
                 message: `Failed to update VS Code settings: ${error instanceof Error ? error.message : String(error)}`
             };
-        }
-    }
-
-    private writeMcpConfigFile(configPath: string, config: { servers: Record<string, unknown> }): void {
-        const configDir = path.dirname(configPath);
-        if (!fs.existsSync(configDir)) {
-            fs.mkdirSync(configDir, { recursive: true });
-        }
-
-        let existingConfig: { servers?: Record<string, unknown> } = {};
-        if (fs.existsSync(configPath)) {
-            const content = fs.readFileSync(configPath, 'utf-8');
-            existingConfig = JSON.parse(content);
-        }
-
-        existingConfig.servers = existingConfig.servers || {};
-        existingConfig.servers.kiro = config.servers.kiro;
-
-        fs.writeFileSync(configPath, JSON.stringify(existingConfig, null, 2), 'utf-8');
-    }
-
-    private async getCopilotAuthToken(): Promise<string | undefined> {
-        try {
-            const session = await vscode.authentication.getSession('github', ['copilot'], { createIfNone: true });
-            return session?.accessToken;
-        } catch (error) {
-            console.warn('[SetupService] Unable to retrieve Copilot auth token for MCP server', error);
-            return undefined;
-        }
-    }
-
-    private buildMcpEnvVars(copilotToken?: string): Record<string, string> {
-        const envVars: Record<string, string> = {};
-
-        const defaultModel = this.getDefaultLLMModel();
-        if (defaultModel) {
-            envVars.KIRO_DEFAULT_MODEL = defaultModel;
-        }
-
-        if (copilotToken) {
-            envVars.KIRO_LLM_TOKEN = copilotToken;
-        }
-
-        return envVars;
-    }
-
-    private getDefaultLLMModel(): string {
-        const config = vscode.workspace.getConfiguration('kiroCopilot');
-        const configuredModel = config.get<string>('defaultLanguageModel');
-        if (configuredModel && typeof configuredModel === 'string' && configuredModel.trim().length > 0) {
-            return configuredModel.trim();
-        }
-        return 'copilot-gpt-5';
-    }
-
-    /**
-     * Recursively copy directory (excluding node_modules)
-     */
-    private copyDirectory(src: string, dest: string): void {
-        if (!fs.existsSync(dest)) {
-            fs.mkdirSync(dest, { recursive: true });
-        }
-
-        const entries = fs.readdirSync(src, { withFileTypes: true });
-
-        for (const entry of entries) {
-            const srcPath = path.join(src, entry.name);
-            const destPath = path.join(dest, entry.name);
-
-            if (entry.isDirectory()) {
-                if (entry.name === 'node_modules') {
-                    continue;
-                }
-                this.copyDirectory(srcPath, destPath);
-            } else {
-                fs.copyFileSync(srcPath, destPath);
-            }
         }
     }
 

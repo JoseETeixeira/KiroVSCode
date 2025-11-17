@@ -1,8 +1,5 @@
+---
 agent: kiro
-policyMetadata:
-   version: "2025.11"
-   llmExpectation: "Call runPromptWithLLM to analyze diffs and return llmResponse plus tokenUsage in the MCP response envelope."
-   supportedActions: []
 ---
 # **Professional Git Commit Assistant**
 

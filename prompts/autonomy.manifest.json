@@ -1,59 +1,8 @@
 {
   "version": "2025.11",
   "consent": {
-    "phrase": "continue autonomously",
-    "expiresMinutes": 30
+    "phrase": "",
+    "expiresMinutes": 0
   },
-  "actions": [
-    {
-      "id": "executeTask.next",
-      "tool": "kiro_execute_task",
-      "description": "Run the next unchecked task in the active spec",
-      "requiresConsent": true,
-      "requiresFiles": [
-        ".kiro/steering",
-        ".kiro/specs/<slug>/requirements.md",
-        ".kiro/specs/<slug>/design.md",
-        ".kiro/specs/<slug>/tasks.md"
-      ],
-      "intentSchema": [
-        "specSlug",
-        "userMessage"
-      ],
-      "requiresLLM": true
-    },
-    {
-      "id": "executeTask.retry",
-      "tool": "kiro_execute_task",
-      "description": "Retry the previously failed task for the active spec",
-      "requiresConsent": true,
-      "requiresFiles": [
-        ".kiro/steering",
-        ".kiro/specs/<slug>/requirements.md",
-        ".kiro/specs/<slug>/design.md",
-        ".kiro/specs/<slug>/tasks.md"
-      ],
-      "intentSchema": [
-        "specSlug",
-        "taskId",
-        "userMessage"
-      ],
-      "requiresLLM": true
-    },
-    {
-      "id": "spec.generateRequirements",
-      "tool": "kiro_create_requirements",
-      "description": "Start the requirements workflow for the selected spec",
-      "requiresConsent": true,
-      "requiresFiles": [
-        ".kiro/steering",
-        ".kiro/specs/<slug>/requirements.md"
-      ],
-      "intentSchema": [
-        "specSlug",
-        "userMessage"
-      ],
-      "requiresLLM": true
-    }
-  ]
+  "actions": []
 }

@@ -125,10 +125,16 @@ export function activate(context: vscode.ExtensionContext) {
 
             contextMessage += `\nThen implement this task following the executeTask workflow.`;
 
-            // Open chat with @kiro and the context message
-            await vscode.commands.executeCommand('workbench.action.chat.open', {
-                query: `@kiro ${contextMessage}`
-            });
+            const inserted = await prefillChatInput(contextMessage);
+
+            if (inserted) {
+                vscode.window.showInformationMessage('Chat input prepared. Review and send when you are ready.');
+            } else {
+                await vscode.env.clipboard.writeText(contextMessage);
+                vscode.window.showWarningMessage(
+                    'Unable to prefill the chat input automatically. The message has been copied to your clipboard instead.'
+                );
+            }
         })
     );
 
@@ -220,19 +226,6 @@ export function activate(context: vscode.ExtensionContext) {
                     cancellable: false
                 },
                 async (progress) => {
-                    progress.report({ message: 'Checking setup status...' });
-
-                    // Setup MCP server if needed
-                    if (!setupService.isMCPServerSetup(workspacePath)) {
-                        progress.report({ message: 'Setting up MCP server...' });
-                        const mcpResult = await setupService.setupMCPServer(workspacePath);
-                        if (!mcpResult.success) {
-                            vscode.window.showErrorMessage(mcpResult.message);
-                            return;
-                        }
-                    }
-
-                    // Sync prompt files (always run to fill in any missing templates)
                     progress.report({ message: 'Syncing prompt files...' });
                     const promptResult = await setupService.copyPromptFiles(workspacePath);
                     if (promptResult.success) {
@@ -241,29 +234,14 @@ export function activate(context: vscode.ExtensionContext) {
                         vscode.window.showWarningMessage(promptResult.message);
                     }
 
-                    // Setup MCP config
-                    progress.report({ message: 'Updating MCP configuration...' });
-                    const configResult = await setupService.setupMCPConfig(workspacePath);
-
-                    if (configResult.success) {
-                        const chatApiResult = setupService.ensureChatApiSetting(workspacePath);
-                        if (!chatApiResult.success && chatApiResult.message) {
-                            vscode.window.showWarningMessage(chatApiResult.message);
-                        } else if (chatApiResult.updated) {
-                            vscode.window.showInformationMessage('Enabled experimental chat API for Kiro automation.');
-                        }
-
-                        vscode.window.showInformationMessage(
-                            '✓ Kiro setup complete! Check the terminal for installation progress. You may need to restart VS Code.',
-                            'Restart Now'
-                        ).then(selection => {
-                            if (selection === 'Restart Now') {
-                                vscode.commands.executeCommand('workbench.action.reloadWindow');
-                            }
-                        });
-                    } else {
-                        vscode.window.showErrorMessage(configResult.message);
+                    const chatApiResult = setupService.ensureChatApiSetting(workspacePath);
+                    if (!chatApiResult.success && chatApiResult.message) {
+                        vscode.window.showWarningMessage(chatApiResult.message);
+                    } else if (chatApiResult.updated) {
+                        vscode.window.showInformationMessage('Enabled experimental chat API for Kiro prompts.');
                     }
+
+                    vscode.window.showInformationMessage('✓ Kiro setup complete! Prompt templates are synced.');
                 }
             );
         })
@@ -273,10 +251,8 @@ export function activate(context: vscode.ExtensionContext) {
     const chatParticipant = new ChatParticipant(
         modeManager,
         promptManager,
-        taskContextProvider,
         context,
-        setupService,
-        autonomyPolicyService
+        setupService
     );
     context.subscriptions.push(chatParticipant.register());
 
@@ -296,3 +272,19 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate() {}
+
+async function prefillChatInput(message: string): Promise<boolean> {
+    try {
+        await vscode.commands.executeCommand('workbench.action.chat.open');
+        await delay(100);
+        await vscode.commands.executeCommand('type', { text: message });
+        return true;
+    } catch (error) {
+        console.warn('[Kiro] Unable to prefill chat input.', error);
+        return false;
+    }
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}

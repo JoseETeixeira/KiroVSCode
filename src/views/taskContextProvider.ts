@@ -368,6 +368,15 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
             };
         }
 
+        const action = this.latestPolicy?.actions.find(a => a.id === 'executeTask.next');
+        if (action && !action.requiresConsent) {
+            return {
+                state: 'ready',
+                label: 'Autonomy ready',
+                tooltip: 'Policy allows executeTask.next without additional consent.'
+            };
+        }
+
         const consent = this.autonomyPolicyService.getConsentState(workspaceFolder, 'executeTask.next');
         if (consent) {
             const expiry = new Date(consent.expiresAt).toLocaleTimeString();

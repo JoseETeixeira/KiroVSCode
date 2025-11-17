@@ -2,25 +2,15 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ModeManager } from '../services/modeManager';
 import { PromptManager } from '../services/promptManager';
-import { TaskContextProvider } from '../views/taskContextProvider';
 import { SetupService } from '../services/setupService';
-import { AutonomyPolicyService, AutonomyAction, AutonomyPolicy } from '../services/autonomyPolicyService';
-import { IntentPayload } from '../services/intentService';
-
-type ChatAccessHandle = {
-    sendChatMessage(message: string): Promise<void>;
-};
 
 export class ChatParticipant {
-    private readonly copilotParticipantIds = ['github.copilot.chat', 'github.copilot', 'copilot'];
 
     constructor(
         private modeManager: ModeManager,
         private promptManager: PromptManager,
-        private taskContextProvider: TaskContextProvider,
         private extensionContext: vscode.ExtensionContext,
-        private setupService: SetupService,
-        private autonomyPolicyService: AutonomyPolicyService
+        private setupService: SetupService
     ) {}
 
     register(): vscode.Disposable {
@@ -73,272 +63,11 @@ export class ChatParticipant {
             case 'task':
                 await this.handleTaskCommand(request, stream);
                 break;
-            case 'intent':
-                await this.handleIntentCommand(request, stream, token);
-                break;
             default:
                 stream.markdown(`Unknown command: /${request.command}\n`);
         }
     }
 
-    private async handleIntentCommand(
-        request: vscode.ChatRequest,
-        stream: vscode.ChatResponseStream,
-        token?: vscode.CancellationToken // eslint-disable-line @typescript-eslint/no-unused-vars
-    ): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            stream.markdown('⚠️ Cannot process `/intent` because no workspace is open.\n');
-            return;
-        }
-
-        const rawPayload = request.prompt?.trim();
-        if (!rawPayload) {
-            stream.markdown('⚠️ `/intent` requires a JSON payload.\n');
-            return;
-        }
-
-        let payload: IntentPayload;
-        try {
-            payload = JSON.parse(rawPayload);
-        } catch (error) {
-            stream.markdown('❌ Unable to parse intent payload. Provide valid JSON.\n');
-            return;
-        }
-
-        stream.markdown('**Intent Status**\n');
-        stream.markdown('- `queued` Validating payload...\n');
-
-        const validation = await this.validateIntentPayload(payload, workspaceFolder, stream);
-        if (!validation) {
-            return;
-        }
-
-        const workspaceReady = await this.ensureWorkspaceReady(workspaceFolder.uri.fsPath, stream);
-        if (!workspaceReady) {
-            stream.markdown('- `failed` Workspace setup did not complete.\n');
-            return;
-        }
-
-        const autonomyState = payload.consentToken
-            ? 'Autonomy: active (consent token present).'
-            : 'Autonomy: manual fallback (no consent token).';
-        stream.markdown(`${autonomyState}\n`);
-
-        const { displayText, toolInput } = this.buildIntentCommand(validation.action, payload);
-
-        stream.markdown('- `dispatching` Invoking MCP tool via language model...\n');
-        stream.markdown('Command:\n');
-        stream.markdown('```text\n');
-        stream.markdown(`${displayText}\n`);
-        stream.markdown('```\n');
-
-        const success = await this.invokeKiroTool(validation.action.tool, toolInput, stream);
-
-        if (success) {
-            stream.markdown('- `completed` Intent dispatched. Monitor status updates for progress.\n');
-        }
-    }
-
-    private async validateIntentPayload(
-        payload: IntentPayload,
-        workspaceFolder: vscode.WorkspaceFolder,
-        stream: vscode.ChatResponseStream
-    ): Promise<{ policy: AutonomyPolicy; action: AutonomyAction } | undefined> {
-        if (!payload.actionId || !payload.userMessage) {
-            stream.markdown('❌ Intent payload missing required fields `actionId` or `userMessage`.\n');
-            return undefined;
-        }
-
-        const policyResult = await this.autonomyPolicyService.getPolicy(workspaceFolder);
-        if (!policyResult.policy) {
-            stream.markdown(`❌ ${policyResult.error ?? 'Autonomy policy unavailable.'}\n`);
-            stream.markdown('Run **Kiro: Setup Project** to sync prompts and manifest files.\n');
-            return undefined;
-        }
-
-        const policy = policyResult.policy;
-        if (payload.policyVersion && payload.policyVersion !== policy.version) {
-            stream.markdown(
-                `❌ Intent policy version (${payload.policyVersion}) mismatches workspace manifest (${policy.version}). Run setup again.\n`
-            );
-            return undefined;
-        }
-
-        if (payload.instructionsVersion && payload.instructionsVersion !== policy.version) {
-            stream.markdown(
-                `❌ Instructions version (${payload.instructionsVersion}) mismatches manifest (${policy.version}). Rerun setup to refresh instructions.\n`
-            );
-            return undefined;
-        }
-
-        const action = policy.actions.find(a => a.id === payload.actionId);
-        if (!action) {
-            stream.markdown(`❌ Action '${payload.actionId}' is not defined in autonomy manifest version ${policy.version}.\n`);
-            return undefined;
-        }
-
-        const requirementsOk = await this.ensureIntentRequirements(workspaceFolder, action, payload, stream);
-        if (!requirementsOk) {
-            return undefined;
-        }
-
-        stream.markdown('- `running` Intent validated.\n');
-        return { policy, action };
-    }
-
-    private async ensureIntentRequirements(
-        workspaceFolder: vscode.WorkspaceFolder,
-        action: AutonomyAction,
-        payload: IntentPayload,
-        stream: vscode.ChatResponseStream
-    ): Promise<boolean> {
-        if (!action.requiresFiles || action.requiresFiles.length === 0) {
-            return true;
-        }
-
-        const missingPaths: string[] = [];
-        for (const requirement of action.requiresFiles) {
-            let relativePath = requirement;
-            if (requirement.includes('<slug>')) {
-                if (!payload.specSlug) {
-                    stream.markdown('❌ Intent payload missing `specSlug` required for this action.\n');
-                    return false;
-                }
-                relativePath = requirement.replace('<slug>', payload.specSlug);
-            }
-
-            const targetPath = path.join(workspaceFolder.uri.fsPath, relativePath);
-            const exists = await this.pathExists(vscode.Uri.file(targetPath));
-            if (!exists) {
-                missingPaths.push(relativePath);
-            }
-        }
-
-        if (missingPaths.length > 0) {
-            stream.markdown('❌ Required files are missing for this intent:\n');
-            missingPaths.forEach(missing => stream.markdown(`- ${missing}\n`));
-            stream.markdown('Run **Kiro: Setup Project** or regenerate the spec artifacts, then try again.\n');
-            return false;
-        }
-
-        return true;
-    }
-
-    private buildIntentCommand(
-        action: AutonomyAction,
-        payload: IntentPayload
-    ): { displayText: string; toolInput: string } {
-        const lines: string[] = [
-            `Intent action: ${payload.actionId}`,
-            `Policy version: ${payload.policyVersion ?? 'unknown'}`,
-            `Instructions version: ${payload.instructionsVersion ?? 'unknown'}`,
-            `Activation source: ${payload.activationSource}`,
-            `User message: ${payload.userMessage}`
-        ];
-
-        if (payload.specSlug) {
-            lines.splice(1, 0, `Spec slug: ${payload.specSlug}`);
-        }
-        if (typeof payload.taskId === 'number') {
-            lines.splice(2, 0, `Task ID: ${payload.taskId}${payload.taskLabel ? ` (${payload.taskLabel})` : ''}`);
-        }
-        if (payload.metadata) {
-            lines.push(`Metadata: ${JSON.stringify(payload.metadata)}`);
-        }
-
-        const summary = lines.join('\n');
-        return {
-            displayText: this.formatToolDisplayCommand(action.tool, summary),
-            toolInput: this.formatToolDispatchCommand(action.tool, summary)
-        };
-    }
-
-    private formatToolDisplayCommand(toolName: string, command: string): string {
-        return `Use ${toolName} with command:\n${command}`;
-    }
-
-    private formatToolDispatchCommand(toolName: string, command: string): string {
-        const escaped = command.replace(/"/g, '\\"');
-        return `Use ${toolName} with command: "${escaped}"`;
-    }
-
-    private async invokeKiroTool(
-        toolName: string,
-        toolInput: string,
-        stream: vscode.ChatResponseStream
-    ): Promise<boolean> {
-        if (!this.canUseProgrammaticChat()) {
-            stream.markdown(
-                'ℹ️ This VS Code build does not expose the experimental chat API yet. Update to the latest Stable/Insiders or enable `workbench.experimental.chatApi` to allow automatic dispatch. Falling back to clipboard.\n'
-            );
-            return this.copyCommandToClipboard(toolInput, stream);
-        }
-        try {
-            const participant = await this.getCopilotChatAccess();
-            await participant.sendChatMessage(toolInput);
-            return true;
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.warn(`[ChatParticipant] Failed to invoke ${toolName} automatically`, error);
-            stream.markdown(`❌ Unable to invoke ${toolName} automatically: ${message}\n`);
-            return this.copyCommandToClipboard(toolInput, stream);
-        }
-    }
-
-    private canUseProgrammaticChat(): boolean {
-        const chatApi = (vscode as typeof vscode & {
-            chat?: { requestChatAccess?: (id: string) => Promise<ChatAccessHandle> };
-        }).chat;
-        return Boolean(chatApi?.requestChatAccess);
-    }
-
-    private async copyCommandToClipboard(
-        toolInput: string,
-        stream: vscode.ChatResponseStream
-    ): Promise<boolean> {
-        stream.markdown('Attempting clipboard fallback...\n');
-        try {
-            await vscode.env.clipboard.writeText(toolInput);
-            await vscode.commands.executeCommand('workbench.action.chat.open', { query: toolInput });
-            stream.markdown('⚠️ Copied the command to Copilot chat. If it does not appear, paste it manually.\n');
-            return true;
-        } catch (fallbackError) {
-            const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-            stream.markdown(`❌ Clipboard fallback failed: ${fallbackMessage}\n`);
-            return false;
-        }
-    }
-
-    private async getCopilotChatAccess(): Promise<ChatAccessHandle> {
-        const chatApi = (vscode as typeof vscode & {
-            chat?: { requestChatAccess?: (id: string) => Promise<ChatAccessHandle> };
-        }).chat;
-
-        if (!chatApi?.requestChatAccess) {
-            throw new Error('VS Code chat APIs are unavailable in this build.');
-        }
-
-        let lastError: unknown;
-        for (const participantId of this.copilotParticipantIds) {
-            try {
-                return await chatApi.requestChatAccess(participantId);
-            } catch (error) {
-                lastError = error;
-            }
-        }
-
-        throw lastError ?? new Error('Unable to reach the GitHub Copilot chat participant.');
-    }
-
-    private async pathExists(uri: vscode.Uri): Promise<boolean> {
-        try {
-            await vscode.workspace.fs.stat(uri);
-            return true;
-        } catch {
-            return false;
-        }
-    }
     /**
      * Switch to Vibe Coding mode
      */
@@ -379,40 +108,35 @@ export class ChatParticipant {
 
         stream.markdown(`*${modeLabel} mode active*\n\n`);
 
-        // Check if MCP server is set up
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             stream.markdown('⚠️ No workspace folder open. Please open a workspace to use Kiro.\n');
             return;
         }
 
-        const workspacePath = workspaceFolder.uri.fsPath;
-        const workspaceReady = await this.ensureWorkspaceReady(workspacePath, stream);
-        if (!workspaceReady) {
+        const promptFileName = mode === 'spec' ? 'requirements.prompt.md' : 'executeTask.prompt.md';
+        const promptFilePath = path.join(workspaceFolder.uri.fsPath, '.github', 'prompts', promptFileName);
+        const promptUri = vscode.Uri.file(promptFilePath);
+        const relativePromptPath = path.relative(workspaceFolder.uri.fsPath, promptFilePath);
+
+        const promptReady = await this.ensurePromptFile(promptUri, workspaceFolder, stream);
+        if (!promptReady) {
             return;
         }
 
-        const toolName = mode === 'spec' ? 'kiro_create_requirements' : 'kiro_execute_task';
-        const prompt = request.prompt?.trim();
+        stream.markdown('Manual workflow only. Follow the prompt template referenced below and drive the conversation yourself.\n');
+        stream.markdown(`- Prompt file: \`${relativePromptPath}\`\n`);
+        stream.markdown(`- Suggested context command: \`#File ${relativePromptPath}\` to pull it into chat\n`);
+        stream.markdown(`- Next step: work through each section of ${promptFileName} while discussing your task\n\n`);
 
-        if (!prompt) {
-            stream.markdown('⚠️ Unable to invoke the MCP tool because the request prompt was empty.\n');
-            return;
-        }
-
-        const displayCommand = this.formatToolDisplayCommand(toolName, prompt);
-        const dispatchCommand = this.formatToolDispatchCommand(toolName, prompt);
-
-        stream.markdown('Sending to Copilot with Kiro MCP tools...\n\n');
-        stream.markdown('Command:\n');
-        stream.markdown('```text\n');
-        stream.markdown(`${displayCommand}\n`);
-        stream.markdown('```\n\n');
-
-        const success = await this.invokeKiroTool(toolName, dispatchCommand, stream);
-
-        if (success) {
-            stream.markdown('✅ MCP tool invocation finished. Watch for status updates above.\n');
+        const trimmedPrompt = request.prompt?.trim();
+        if (trimmedPrompt) {
+            stream.markdown('Include this request when you follow the template:\n');
+            stream.markdown('```text\n');
+            stream.markdown(`${trimmedPrompt}\n`);
+            stream.markdown('```\n');
+        } else {
+            stream.markdown('Share the task details in chat, then follow the template steps one by one.\n');
         }
     }
 
@@ -453,35 +177,31 @@ export class ChatParticipant {
         }
     }
 
-    private async ensureWorkspaceReady(
-        workspacePath: string,
+    private async ensurePromptFile(
+        promptUri: vscode.Uri,
+        workspaceFolder: vscode.WorkspaceFolder,
         stream: vscode.ChatResponseStream
     ): Promise<boolean> {
-        if (!this.setupService.isMCPServerSetup(workspacePath)) {
-            stream.markdown('🔧 Setting up MCP server (first time)...\n\n');
-            const mcpResult = await this.setupService.setupMCPServer(workspacePath);
-            if (!mcpResult.success) {
-                stream.markdown(`❌ ${mcpResult.message}\n`);
+        try {
+            await vscode.workspace.fs.stat(promptUri);
+            return true;
+        } catch {
+            stream.markdown('📝 Prompt file missing. Syncing templates...\n');
+            const result = await this.setupService.copyPromptFiles(workspaceFolder.uri.fsPath);
+            if (!result.success) {
+                stream.markdown(`❌ ${result.message}\n`);
                 return false;
             }
-            stream.markdown(`✓ ${mcpResult.message}\n\n`);
         }
 
-        if (!this.setupService.arePromptFilesSetup(workspacePath)) {
-            stream.markdown('📝 Copying prompt files (first time)...\n\n');
-            const promptResult = await this.setupService.copyPromptFiles(workspacePath);
-            if (promptResult.success) {
-                stream.markdown(`✓ ${promptResult.message}\n\n`);
-            } else {
-                stream.markdown(`⚠️ ${promptResult.message}\n\n`);
-            }
+        try {
+            await vscode.workspace.fs.stat(promptUri);
+            return true;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            stream.markdown(`❌ Prompt file still unavailable: ${message}\n`);
+            stream.markdown('Run **Kiro: Setup Project** to regenerate the templates, then try again.\n');
+            return false;
         }
-
-        const configResult = await this.setupService.setupMCPConfig(workspacePath);
-        if (!configResult.success) {
-            stream.markdown(`⚠️ ${configResult.message}\n\n`);
-        }
-
-        return true;
     }
 }

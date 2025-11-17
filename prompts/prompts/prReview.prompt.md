@@ -1,8 +1,5 @@
+---
 agent: kiro
-policyMetadata:
-  version: "2025.11"
-  llmExpectation: "Call runPromptWithLLM to perform PR reviews and include llmResponse plus tokenUsage in the MCP response envelope."
-  supportedActions: []
 ---
 
 # Code Review Prompt

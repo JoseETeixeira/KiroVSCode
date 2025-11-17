@@ -88,9 +88,12 @@ export class AutonomyPolicyService implements vscode.Disposable {
 
         const manifestUri = this.getManifestUri(folder);
         if (!(await this.fileExists(manifestUri))) {
-            const error = 'Autonomy manifest not found. Run "Kiro: Setup Project" to sync prompts.';
-            this.cache.set(cacheKey, { error, loadedAt: Date.now() });
-            return { workspaceFolder: folder, error };
+            const restored = await this.restoreManifestFromExtension(folder);
+            if (!restored) {
+                const error = 'Autonomy manifest not found and could not be restored from the extension prompts. Run "Kiro: Setup Project" to sync prompts.';
+                this.cache.set(cacheKey, { error, loadedAt: Date.now() });
+                return { workspaceFolder: folder, error };
+            }
         }
 
         try {
@@ -272,6 +275,40 @@ export class AutonomyPolicyService implements vscode.Disposable {
 
     private getManifestUri(workspaceFolder: vscode.WorkspaceFolder): vscode.Uri {
         return vscode.Uri.joinPath(workspaceFolder.uri, '.github', 'prompts', 'autonomy.manifest.json');
+    }
+
+    private getExtensionManifestUri(): vscode.Uri {
+        return vscode.Uri.joinPath(this.extensionContext.extensionUri, 'prompts', 'autonomy.manifest.json');
+    }
+
+    private getExtensionVersionUri(): vscode.Uri {
+        return vscode.Uri.joinPath(this.extensionContext.extensionUri, 'prompts', 'autonomy-version.json');
+    }
+
+    private async restoreManifestFromExtension(workspaceFolder: vscode.WorkspaceFolder): Promise<boolean> {
+        try {
+            const extensionManifestUri = this.getExtensionManifestUri();
+            if (!(await this.fileExists(extensionManifestUri))) {
+                return false;
+            }
+
+            const promptsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.github', 'prompts');
+            await vscode.workspace.fs.createDirectory(promptsDir);
+
+            const manifestDestination = vscode.Uri.joinPath(promptsDir, 'autonomy.manifest.json');
+            await vscode.workspace.fs.copy(extensionManifestUri, manifestDestination, { overwrite: true });
+
+            const extensionVersionUri = this.getExtensionVersionUri();
+            if (await this.fileExists(extensionVersionUri)) {
+                const versionDestination = vscode.Uri.joinPath(promptsDir, 'autonomy-version.json');
+                await vscode.workspace.fs.copy(extensionVersionUri, versionDestination, { overwrite: true });
+            }
+
+            return true;
+        } catch (error) {
+            console.warn('[AutonomyPolicyService] Failed to restore autonomy manifest from extension prompts.', error);
+            return false;
+        }
     }
 
     private getWorkspaceKey(workspaceFolder: vscode.WorkspaceFolder): string {

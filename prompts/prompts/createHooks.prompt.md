@@ -1,8 +1,5 @@
+---
 agent: kiro
-policyMetadata:
-	version: "2025.11"
-	llmExpectation: "Call runPromptWithLLM to generate hook definitions and include llmResponse plus tokenUsage in the MCP response envelope."
-	supportedActions: []
 ---
 # Workflow Stage: Hook Creation
 
