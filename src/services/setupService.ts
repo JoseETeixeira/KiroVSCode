@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { copyDirectorySkippingExisting, CopyStats, createCopyStats } from './promptCopyUtils';
+
+interface PromptCopyDetails {
+    prompts: CopyStats;
+    instructions: CopyStats;
+    failureCount: number;
+}
 
 export class SetupService {
     constructor(private extensionContext: vscode.ExtensionContext) {}
@@ -77,13 +84,15 @@ export class SetupService {
     /**
      * Copy prompt files to .github folders
      */
-    async copyPromptFiles(workspacePath: string): Promise<{ success: boolean; message: string }> {
+    async copyPromptFiles(
+        workspacePath: string
+    ): Promise<{ success: boolean; message: string; details?: PromptCopyDetails }> {
         const extensionPromptsPath = path.join(this.extensionContext.extensionPath, 'prompts');
-        const githubInstructionsPath = path.join(workspacePath, '.github', 'instructions');
-        const githubPromptsPath = path.join(workspacePath, '.github', 'prompts');
+        const githubRoot = path.join(workspacePath, '.github');
+        const githubInstructionsPath = path.join(githubRoot, 'instructions');
+        const githubPromptsPath = path.join(githubRoot, 'prompts');
 
         try {
-            // Check if prompts directory exists in extension
             if (!fs.existsSync(extensionPromptsPath)) {
                 return {
                     success: false,
@@ -91,7 +100,9 @@ export class SetupService {
                 };
             }
 
-            // Create .github directories if they don't exist
+            if (!fs.existsSync(githubRoot)) {
+                fs.mkdirSync(githubRoot, { recursive: true });
+            }
             if (!fs.existsSync(githubInstructionsPath)) {
                 fs.mkdirSync(githubInstructionsPath, { recursive: true });
             }
@@ -99,33 +110,48 @@ export class SetupService {
                 fs.mkdirSync(githubPromptsPath, { recursive: true });
             }
 
-            // Copy instruction and prompt files to their respective locations
-            const promptFiles = fs.readdirSync(extensionPromptsPath);
-            let instructionsCount = 0;
-            let promptsCount = 0;
+            const instructionStats = createCopyStats();
+            const promptStats = createCopyStats();
 
-            for (const file of promptFiles) {
-                const srcPath = path.join(extensionPromptsPath, file);
+            const instructionsSource = path.join(extensionPromptsPath, 'instructions');
+            if (fs.existsSync(instructionsSource)) {
+                copyDirectorySkippingExisting(instructionsSource, githubInstructionsPath, instructionStats, githubInstructionsPath);
+            } else {
+                this.copyFlatFiles(extensionPromptsPath, githubInstructionsPath, '.instructions.md', instructionStats);
+            }
 
-                // Copy .instructions.md files to .github/instructions
-                if (file.endsWith('.instructions.md')) {
-                    const destPath = path.join(githubInstructionsPath, file);
-                    fs.copyFileSync(srcPath, destPath);
-                    instructionsCount++;
-                }
-                // Copy .prompt.md files to .github/prompts
-                else if (file.endsWith('.prompt.md')) {
-                    const destPath = path.join(githubPromptsPath, file);
-                    fs.copyFileSync(srcPath, destPath);
-                    promptsCount++;
-                }
+            const promptTemplatesSource = path.join(extensionPromptsPath, 'prompts');
+            if (fs.existsSync(promptTemplatesSource)) {
+                copyDirectorySkippingExisting(promptTemplatesSource, githubPromptsPath, promptStats, githubPromptsPath);
+            } else {
+                this.copyFlatFiles(extensionPromptsPath, githubPromptsPath, '.prompt.md', promptStats);
+            }
+
+            const failures = [...instructionStats.failed, ...promptStats.failed];
+            const failureCount = failures.length;
+
+            const messageParts = [
+                `Prompts: ${promptStats.created} created, ${promptStats.skipped} skipped`,
+                `Instructions: ${instructionStats.created} created, ${instructionStats.skipped} skipped`
+            ];
+
+            if (failureCount > 0) {
+                const failureSummary = failures
+                    .slice(0, 5)
+                    .map(failure => `${failure.relativePath}: ${failure.error}`)
+                    .join('; ');
+                messageParts.push(`Failures (${failureCount}): ${failureSummary}`);
             }
 
             return {
-                success: true,
-                message: `Copied ${instructionsCount} instruction file(s) to .github/instructions/ and ${promptsCount} prompt file(s) to .github/prompts/`
+                success: failureCount === 0,
+                message: messageParts.join(' | '),
+                details: {
+                    prompts: promptStats,
+                    instructions: instructionStats,
+                    failureCount
+                }
             };
-
         } catch (error) {
             return {
                 success: false,
@@ -242,6 +268,38 @@ export class SetupService {
                 this.copyDirectory(srcPath, destPath);
             } else {
                 fs.copyFileSync(srcPath, destPath);
+            }
+        }
+    }
+
+    private copyFlatFiles(srcDir: string, destDir: string, suffix: string, stats: CopyStats): void {
+        if (!fs.existsSync(srcDir)) {
+            return;
+        }
+
+        const entries = fs.readdirSync(srcDir, { withFileTypes: true });
+
+        for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith(suffix)) {
+                continue;
+            }
+
+            const srcPath = path.join(srcDir, entry.name);
+            const destPath = path.join(destDir, entry.name);
+
+            try {
+                if (fs.existsSync(destPath)) {
+                    stats.skipped++;
+                    continue;
+                }
+
+                fs.copyFileSync(srcPath, destPath);
+                stats.created++;
+            } catch (error) {
+                stats.failed.push({
+                    relativePath: entry.name,
+                    error: error instanceof Error ? error.message : String(error)
+                });
             }
         }
     }

@@ -162,13 +162,13 @@ export function activate(context: vscode.ExtensionContext) {
                         }
                     }
 
-                    // Copy prompt files if needed
-                    if (!setupService.arePromptFilesSetup(workspacePath)) {
-                        progress.report({ message: 'Copying prompt files...' });
-                        const promptResult = await setupService.copyPromptFiles(workspacePath);
-                        if (!promptResult.success) {
-                            vscode.window.showWarningMessage(promptResult.message);
-                        }
+                    // Sync prompt files (always run to fill in any missing templates)
+                    progress.report({ message: 'Syncing prompt files...' });
+                    const promptResult = await setupService.copyPromptFiles(workspacePath);
+                    if (promptResult.success) {
+                        vscode.window.showInformationMessage(promptResult.message);
+                    } else {
+                        vscode.window.showWarningMessage(promptResult.message);
                     }
 
                     // Setup MCP config

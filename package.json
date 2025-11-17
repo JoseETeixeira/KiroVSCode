@@ -2,7 +2,7 @@
   "name": "kiro-copilot-extension",
   "displayName": "Kiro-Style Copilot",
   "description": "A VSCode extension that adds Kiro-style Vibe Coding and Spec modes to GitHub Copilot",
-  "version": "0.0.5",
+  "version": "0.0.7",
   "publisher": "JosEduardoTeixeira",
   "engines": {
     "vscode": "^1.85.0"
@@ -210,7 +210,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node --test \"./out/test/**/*.test.js\""
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",

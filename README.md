@@ -83,6 +83,8 @@ Default prompts location:
 C:\Users\josee\AppData\Roaming\Code\User\prompts\
 ```
 
+Running **Kiro: Setup Project** now always syncs the bundled `prompts/` directory into your workspace `.github` folder while preserving any existing files, so rerunning the command simply fills in missing templates. Delete `.github/prompts` if you ever need a clean refresh.
+
 ## 🎨 What You Get
 
 ✅ 571 lines of TypeScript code
