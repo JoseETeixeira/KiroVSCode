@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs/promises';
 import * as path from 'path';
 import { PromptManager } from '../services/promptManager';
 import { ModeManager } from '../services/modeManager';
 import { IntentService, IntentStatusEvent } from '../services/intentService';
 import { AutonomyPolicyService, AutonomyPolicy } from '../services/autonomyPolicyService';
+import { IPlatformAdapter } from '../adapters';
 
 export type TaskStatus = 'pending' | 'completed' | 'failed';
 
@@ -81,6 +81,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     private readonly DEBOUNCE_DELAY = 1000; // 1 second
 
     constructor(
+        private adapter: IPlatformAdapter,
         private promptManager: PromptManager,
         private modeManager: ModeManager,
         private intentService: IntentService,
@@ -119,14 +120,16 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     }
 
     private async hydrateAutonomyContext(): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (!workspaceFolder) {
             this.latestPolicy = undefined;
             this.refresh();
             return;
         }
 
-        const result = await this.autonomyPolicyService.getPolicy(workspaceFolder);
+        // Cast to vscode.WorkspaceFolder for AutonomyPolicyService compatibility
+        const result = await this.autonomyPolicyService.getPolicy(workspaceFolder as vscode.WorkspaceFolder);
         if (result.policy) {
             this.latestPolicy = result.policy;
         } else {
@@ -163,7 +166,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     }
 
     async getChildren(element?: TaskTreeItem): Promise<TaskTreeItem[]> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
         if (!workspaceFolders) {
             console.log('[TaskContextProvider] No workspace folders found');
             return [];
@@ -359,7 +362,8 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
             };
         }
 
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (!workspaceFolder) {
             return {
                 state: 'setup-required',
@@ -377,7 +381,8 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
             };
         }
 
-        const consent = this.autonomyPolicyService.getConsentState(workspaceFolder, 'executeTask.next');
+        // Cast to vscode.WorkspaceFolder for AutonomyPolicyService compatibility
+        const consent = this.autonomyPolicyService.getConsentState(workspaceFolder as vscode.WorkspaceFolder, 'executeTask.next');
         if (consent) {
             const expiry = new Date(consent.expiresAt).toLocaleTimeString();
             return {
@@ -521,23 +526,25 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         const specFolders: SpecFolderInfo[] = [];
 
         try {
-            const entries = await fs.readdir(specsPath, { withFileTypes: true });
+            const specsUri = this.adapter.createFileUri(specsPath);
+            const entries = await this.adapter.readDirectory(specsUri);
             console.log(`[TaskContextProvider] Found ${entries.length} entries in .kiro/specs`);
 
-            for (const entry of entries) {
-                if (entry.isDirectory()) {
-                    const specPath = path.join(specsPath, entry.name);
+            for (const [name, fileType] of entries) {
+                // Check if it's a directory (FileType.Directory = 2)
+                if (fileType === 2) {
+                    const specPath = path.join(specsPath, name);
                     const tasksPath = path.join(specPath, 'tasks.md');
 
                     try {
-                        await fs.access(tasksPath);
-                        const tasks = await this.parseTasksFromFile(tasksPath, entry.name);
+                        await this.adapter.stat(this.adapter.createFileUri(tasksPath));
+                        const tasks = await this.parseTasksFromFile(tasksPath, name);
 
                         const completedCount = tasks.filter(t => t.status === 'completed').length;
                         const failedCount = tasks.filter(t => t.status === 'failed').length;
 
                         specFolders.push({
-                            name: entry.name,
+                            name: name,
                             path: specPath,
                             tasks,
                             totalTasks: tasks.length,
@@ -545,10 +552,10 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                             failedTasks: failedCount
                         });
 
-                        console.log(`[TaskContextProvider] Spec folder '${entry.name}': ${tasks.length} tasks (${completedCount} completed, ${failedCount} failed)`);
+                        console.log(`[TaskContextProvider] Spec folder '${name}': ${tasks.length} tasks (${completedCount} completed, ${failedCount} failed)`);
                     } catch {
                         // No tasks.md in this spec folder, skip it
-                        console.log(`[TaskContextProvider] Spec folder '${entry.name}' has no tasks.md, skipping`);
+                        console.log(`[TaskContextProvider] Spec folder '${name}' has no tasks.md, skipping`);
                     }
                 }
             }
@@ -568,7 +575,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         const rootTasksPath = path.join(workspaceRoot, 'tasks.md');
 
         try {
-            await fs.access(rootTasksPath);
+            await this.adapter.stat(this.adapter.createFileUri(rootTasksPath));
             return await this.parseTasksFromFile(rootTasksPath);
         } catch {
             return [];
@@ -582,7 +589,9 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         const tasks: TaskItem[] = [];
 
         try {
-            const content = await fs.readFile(filePath, 'utf-8');
+            const fileUri = this.adapter.createFileUri(filePath);
+            const contentBytes = await this.adapter.readFile(fileUri);
+            const content = new TextDecoder().decode(contentBytes);
             const lines = content.split('\n');
 
             for (let i = 0; i < lines.length; i++) {
@@ -656,7 +665,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         } catch (error) {
             console.error(`[TaskContextProvider] Failed to parse tasks from ${filePath}:`, error);
             // Don't throw - return empty array to allow other files to be processed
-            vscode.window.showWarningMessage(
+            await this.adapter.showWarningMessage(
                 `Failed to parse tasks from ${path.basename(filePath)}: ${error instanceof Error ? error.message : 'Unknown error'}`
             );
         }
@@ -673,7 +682,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         }
 
         this.scanInProgress = true;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
 
         if (!workspaceFolders) {
             this.scanInProgress = false;
@@ -681,8 +690,8 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         }
 
         try {
-            // Use VS Code's findFiles API which respects .gitignore
-            const taskFiles = await vscode.workspace.findFiles(
+            // Use adapter's findFiles API which respects .gitignore
+            const taskFiles = await this.adapter.findFiles(
                 '**/tasks.md',
                 '**/node_modules/**',
                 10000 // max results
@@ -701,8 +710,8 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
 
             // Show progress if more than 10 files
             if (taskFiles.length > 10) {
-                await vscode.window.withProgress({
-                    location: vscode.ProgressLocation.Notification,
+                await this.adapter.withProgress({
+                    location: 'notification',
                     title: 'Scanning workspace for tasks...',
                     cancellable: false
                 }, async (progress) => {
@@ -732,7 +741,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
             this.refresh();
         } catch (error) {
             console.error('[TaskContextProvider] Failed to scan workspace for tasks:', error);
-            vscode.window.showErrorMessage(
+            await this.adapter.showErrorMessage(
                 `Failed to scan workspace for tasks: ${error instanceof Error ? error.message : String(error)}`
             );
         } finally {
@@ -749,28 +758,30 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         this.specFolderWatcher?.dispose();
 
         // Watch all tasks.md files across the workspace
-        this.fileWatcher = vscode.workspace.createFileSystemWatcher('**/tasks.md');
+        const fileWatcher = this.adapter.createFileSystemWatcher('**/tasks.md');
+        this.fileWatcher = fileWatcher as unknown as vscode.FileSystemWatcher;
         this.registerDisposable(this.fileWatcher);
-        this.registerDisposable(this.fileWatcher.onDidCreate((uri) => this.handleFileChange(uri, 'create')));
-        this.registerDisposable(this.fileWatcher.onDidChange((uri) => this.handleFileChange(uri, 'change')));
-        this.registerDisposable(this.fileWatcher.onDidDelete((uri) => this.handleFileChange(uri, 'delete')));
+        this.registerDisposable(fileWatcher.onDidCreate((uri) => this.handleFileChange(uri as vscode.Uri, 'create')));
+        this.registerDisposable(fileWatcher.onDidChange((uri) => this.handleFileChange(uri as vscode.Uri, 'change')));
+        this.registerDisposable(fileWatcher.onDidDelete((uri) => this.handleFileChange(uri as vscode.Uri, 'delete')));
 
         // Watch for spec folder creation/deletion to keep spec list in sync
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (workspaceFolder) {
-            const specPattern = new vscode.RelativePattern(workspaceFolder, '.kiro/specs/*');
-            this.specFolderWatcher = vscode.workspace.createFileSystemWatcher(specPattern, false, true, false);
+            const specWatcher = this.adapter.createRelativePatternWatcher(workspaceFolder, '.kiro/specs/*', false, true, false);
+            this.specFolderWatcher = specWatcher as unknown as vscode.FileSystemWatcher;
             this.registerDisposable(this.specFolderWatcher);
-            this.registerDisposable(this.specFolderWatcher.onDidCreate((uri) => this.handleSpecFolderChange(uri, 'create')));
-            this.registerDisposable(this.specFolderWatcher.onDidDelete((uri) => this.handleSpecFolderChange(uri, 'delete')));
+            this.registerDisposable(specWatcher.onDidCreate((uri) => this.handleSpecFolderChange(uri as vscode.Uri, 'create')));
+            this.registerDisposable(specWatcher.onDidDelete((uri) => this.handleSpecFolderChange(uri as vscode.Uri, 'delete')));
         }
 
-        // Listen for VS Code file create/delete events (covers actions triggered via the explorer)
+        // Listen for file create/delete events (covers actions triggered via the explorer)
         this.registerDisposable(
-            vscode.workspace.onDidCreateFiles(event => this.handleWorkspaceFilesEvent(event.files, 'create'))
+            this.adapter.onDidCreateFiles(files => this.handleWorkspaceFilesEvent(files as readonly vscode.Uri[], 'create'))
         );
         this.registerDisposable(
-            vscode.workspace.onDidDeleteFiles(event => this.handleWorkspaceFilesEvent(event.files, 'delete'))
+            this.adapter.onDidDeleteFiles(files => this.handleWorkspaceFilesEvent(files as readonly vscode.Uri[], 'delete'))
         );
     }
 
@@ -822,7 +833,8 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     }
 
     private async scanSpecTasks(specName: string): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (!workspaceFolder) {
             return;
         }
@@ -830,7 +842,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
         const tasksPath = path.join(workspaceFolder.uri.fsPath, '.kiro', 'specs', specName, 'tasks.md');
 
         try {
-            await fs.access(tasksPath);
+            await this.adapter.stat(this.adapter.createFileUri(tasksPath));
         } catch {
             // No tasks file yet for this spec - ensure cache is cleared to avoid stale entries
             this.removeSpecFromCache(specName);
@@ -898,25 +910,26 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
      */
     private async scanSingleFile(filePath: string): Promise<void> {
         try {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            const workspaceFolders = this.adapter.getWorkspaceFolders();
+            const workspaceFolder = workspaceFolders?.[0];
             if (!workspaceFolder) {
                 console.warn('[TaskContextProvider] No workspace folder found for scanning');
                 return;
             }
 
             const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+            const fileUri = this.adapter.createFileUri(filePath);
 
             // Check if file exists before trying to stat it
+            let fileStat;
             try {
-                await fs.access(filePath);
+                fileStat = await this.adapter.stat(fileUri);
             } catch (accessError) {
                 console.warn(`[TaskContextProvider] File not accessible: ${relativePath}`);
                 // Remove from cache if it was previously there
                 delete this.taskCache[filePath];
                 return;
             }
-
-            const stat = await fs.stat(filePath);
 
             // Determine if this is part of a spec folder
             const specFolderMatch = relativePath.match(/\.kiro[\\/]specs[\\/]([^\\/]+)/);
@@ -930,7 +943,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
                 filePath,
                 relativePath,
                 tasks,
-                lastModified: stat.mtimeMs,
+                lastModified: fileStat.mtime,
                 specFolder
             };
 
@@ -944,7 +957,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
 
             // Check for specific error types
             if (errorCode === 'EACCES') {
-                vscode.window.showWarningMessage(
+                await this.adapter.showWarningMessage(
                     `Permission denied reading ${fileName}. Check file permissions.`
                 );
             } else if (errorCode === 'ENOENT') {
@@ -963,7 +976,7 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
      * Returns undefined if no tasks.md file is active or if file not in cache
      */
     public getActiveTaskContext(): TaskContext | undefined {
-        const editor = vscode.window.activeTextEditor;
+        const editor = this.adapter.getActiveTextEditor();
 
         // Check if active editor exists and is a tasks.md file
         if (!editor || !editor.document.fileName.endsWith('tasks.md')) {
@@ -1066,13 +1079,13 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     public async handleExecuteNextAutonomyCommand(treeItem?: TaskTreeItem): Promise<void> {
         const specName = this.getSpecNameFromTreeItem(treeItem);
         if (!specName) {
-            vscode.window.showWarningMessage('Select a spec in the Task Context view to execute autonomously.');
+            await this.adapter.showWarningMessage('Select a spec in the Task Context view to execute autonomously.');
             return;
         }
 
         const pendingTask = this.findNextPendingTask(specName);
         if (!pendingTask) {
-            vscode.window.showInformationMessage(`Spec '${specName}' has no pending tasks to execute.`);
+            await this.adapter.showInformationMessage(`Spec '${specName}' has no pending tasks to execute.`);
             return;
         }
 
@@ -1094,13 +1107,13 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
     public async handleRetryAutonomyCommand(treeItem?: TaskTreeItem): Promise<void> {
         const specName = this.getSpecNameFromTreeItem(treeItem);
         if (!specName) {
-            vscode.window.showWarningMessage('Select a spec in the Task Context view to retry a task.');
+            await this.adapter.showWarningMessage('Select a spec in the Task Context view to retry a task.');
             return;
         }
 
         const retryTask = this.findRetryCandidateTask(specName);
         if (!retryTask) {
-            vscode.window.showInformationMessage(`Spec '${specName}' has no failed tasks to retry.`);
+            await this.adapter.showInformationMessage(`Spec '${specName}' has no failed tasks to retry.`);
             return;
         }
 
@@ -1161,17 +1174,17 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
 
     public async handleDeleteSpecCommand(treeItem?: TaskTreeItem): Promise<void> {
         if (!treeItem || !(treeItem instanceof TaskGroupTreeItem) || !treeItem.taskGroup.isSpec) {
-            vscode.window.showWarningMessage('Select a spec in the Task Context view to delete it.');
+            await this.adapter.showWarningMessage('Select a spec in the Task Context view to delete it.');
             return;
         }
 
         const specName = treeItem.taskGroup.specFolderName ?? treeItem.taskGroup.tasks[0]?.specFolder;
         if (!specName) {
-            vscode.window.showErrorMessage('Unable to determine spec folder for the selected item.');
+            await this.adapter.showErrorMessage('Unable to determine spec folder for the selected item.');
             return;
         }
 
-        const confirmation = await vscode.window.showWarningMessage(
+        const confirmation = await this.adapter.showWarningMessage(
             `Delete spec '${specName}'? This will remove the folder .kiro/specs/${specName}.`,
             { modal: true },
             'Delete'
@@ -1183,28 +1196,29 @@ export class TaskContextProvider implements vscode.TreeDataProvider<TaskTreeItem
 
         const success = await this.deleteSpecByName(specName);
         if (success) {
-            vscode.window.showInformationMessage(`Spec '${specName}' deleted.`);
+            await this.adapter.showInformationMessage(`Spec '${specName}' deleted.`);
         }
     }
 
     private async deleteSpecByName(specName: string): Promise<boolean> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (!workspaceFolder) {
-            vscode.window.showErrorMessage('No workspace folder found for deleting the spec.');
+            await this.adapter.showErrorMessage('No workspace folder found for deleting the spec.');
             return false;
         }
 
         const specPath = path.join(workspaceFolder.uri.fsPath, '.kiro', 'specs', specName);
 
         try {
-            await fs.rm(specPath, { recursive: true, force: true });
+            await this.adapter.delete(this.adapter.createFileUri(specPath), { recursive: true });
             this.removeSpecFromCache(specName);
             this.refresh();
             console.log(`[TaskContextProvider] Deleted spec '${specName}' at ${specPath}`);
             return true;
         } catch (error) {
             console.error(`[TaskContextProvider] Failed to delete spec '${specName}':`, error);
-            vscode.window.showErrorMessage(
+            await this.adapter.showErrorMessage(
                 `Failed to delete spec '${specName}': ${error instanceof Error ? error.message : String(error)}`
             );
             return false;

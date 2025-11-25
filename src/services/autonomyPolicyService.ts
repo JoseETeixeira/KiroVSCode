@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TextDecoder } from 'util';
+import { IPlatformAdapter, EventEmitter, FileSystemWatcher, WorkspaceFolder, Uri } from '../adapters';
 
 export interface AutonomyConsentConfig {
     phrase: string;
@@ -23,7 +24,7 @@ export interface AutonomyPolicy {
 }
 
 export interface AutonomyPolicyLoadResult {
-    workspaceFolder?: vscode.WorkspaceFolder;
+    workspaceFolder?: WorkspaceFolder;
     policy?: AutonomyPolicy;
     error?: string;
 }
@@ -48,7 +49,7 @@ interface ConsentWorkspaceState {
 }
 
 export interface AutonomyPolicyChangeEvent {
-    workspaceFolder: vscode.WorkspaceFolder;
+    workspaceFolder: WorkspaceFolder;
     policy?: AutonomyPolicy;
     error?: string;
 }
@@ -59,12 +60,18 @@ export class AutonomyPolicyService implements vscode.Disposable {
 
     private readonly decoder = new TextDecoder('utf-8');
     private readonly cache = new Map<string, PolicyCacheEntry>();
-    private readonly watchers = new Map<string, vscode.FileSystemWatcher>();
-    private readonly policyEmitter = new vscode.EventEmitter<AutonomyPolicyChangeEvent>();
+    private readonly watchers = new Map<string, FileSystemWatcher>();
+    private readonly policyEmitter: EventEmitter<AutonomyPolicyChangeEvent>;
 
-    public readonly onDidUpdatePolicy = this.policyEmitter.event;
+    public readonly onDidUpdatePolicy: vscode.Event<AutonomyPolicyChangeEvent>;
 
-    constructor(private readonly extensionContext: vscode.ExtensionContext) {}
+    constructor(
+        private readonly extensionContext: vscode.ExtensionContext,
+        private readonly adapter: IPlatformAdapter
+    ) {
+        this.policyEmitter = this.adapter.createEventEmitter<AutonomyPolicyChangeEvent>();
+        this.onDidUpdatePolicy = this.policyEmitter.event;
+    }
 
     dispose(): void {
         for (const watcher of this.watchers.values()) {
@@ -74,8 +81,8 @@ export class AutonomyPolicyService implements vscode.Disposable {
         this.policyEmitter.dispose();
     }
 
-    async getPolicy(workspaceFolder?: vscode.WorkspaceFolder): Promise<AutonomyPolicyLoadResult> {
-        const folder = workspaceFolder ?? vscode.workspace.workspaceFolders?.[0];
+    async getPolicy(workspaceFolder?: WorkspaceFolder): Promise<AutonomyPolicyLoadResult> {
+        const folder = workspaceFolder ?? this.adapter.getWorkspaceFolders()?.[0];
         if (!folder) {
             return { error: 'No workspace folder is open.' };
         }
@@ -97,7 +104,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
         }
 
         try {
-            const fileContents = await vscode.workspace.fs.readFile(manifestUri);
+            const fileContents = await this.adapter.readFile(manifestUri);
             const raw = this.decoder.decode(fileContents);
             const policy = this.parseManifest(raw);
             this.cache.set(cacheKey, { policy, loadedAt: Date.now() });
@@ -110,8 +117,8 @@ export class AutonomyPolicyService implements vscode.Disposable {
         }
     }
 
-    async refreshPolicy(workspaceFolder?: vscode.WorkspaceFolder): Promise<AutonomyPolicyLoadResult> {
-        const folder = workspaceFolder ?? vscode.workspace.workspaceFolders?.[0];
+    async refreshPolicy(workspaceFolder?: WorkspaceFolder): Promise<AutonomyPolicyLoadResult> {
+        const folder = workspaceFolder ?? this.adapter.getWorkspaceFolders()?.[0];
         if (!folder) {
             return { error: 'No workspace folder is open.' };
         }
@@ -121,12 +128,12 @@ export class AutonomyPolicyService implements vscode.Disposable {
         return this.getPolicy(folder);
     }
 
-    async getAction(workspaceFolder: vscode.WorkspaceFolder, actionId: string): Promise<AutonomyAction | undefined> {
+    async getAction(workspaceFolder: WorkspaceFolder, actionId: string): Promise<AutonomyAction | undefined> {
         const { policy } = await this.getPolicy(workspaceFolder);
         return policy?.actions.find(action => action.id === actionId);
     }
 
-    getConsentState(workspaceFolder: vscode.WorkspaceFolder, actionId: string): ConsentState | undefined {
+    getConsentState(workspaceFolder: WorkspaceFolder, actionId: string): ConsentState | undefined {
         const key = this.getWorkspaceKey(workspaceFolder);
         const state = this.getConsentStateMap()[key]?.[actionId];
         if (!state) {
@@ -142,7 +149,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
     }
 
     async grantConsent(
-        workspaceFolder: vscode.WorkspaceFolder,
+        workspaceFolder: WorkspaceFolder,
         actionId: string,
         phrase: string,
         expiresMinutes: number
@@ -164,7 +171,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
         return consent;
     }
 
-    async clearConsentState(workspaceFolder: vscode.WorkspaceFolder, actionId?: string): Promise<void> {
+    async clearConsentState(workspaceFolder: WorkspaceFolder, actionId?: string): Promise<void> {
         const key = this.getWorkspaceKey(workspaceFolder);
         const state = this.getConsentStateMap();
         if (!state[key]) {
@@ -180,7 +187,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
         await this.extensionContext.workspaceState.update(AutonomyPolicyService.CONSENT_STATE_KEY, state);
     }
 
-    async isActionAllowed(workspaceFolder: vscode.WorkspaceFolder, actionId: string): Promise<boolean> {
+    async isActionAllowed(workspaceFolder: WorkspaceFolder, actionId: string): Promise<boolean> {
         const { policy } = await this.getPolicy(workspaceFolder);
         if (!policy) {
             return false;
@@ -201,28 +208,28 @@ export class AutonomyPolicyService implements vscode.Disposable {
 
     async requestConsent(
         actionId: string,
-        workspaceFolder?: vscode.WorkspaceFolder
+        workspaceFolder?: WorkspaceFolder
     ): Promise<ConsentState | undefined> {
-        const folder = workspaceFolder ?? vscode.workspace.workspaceFolders?.[0];
+        const folder = workspaceFolder ?? this.adapter.getWorkspaceFolders()?.[0];
         if (!folder) {
-            vscode.window.showErrorMessage('Open a workspace folder before enabling autonomy.');
+            this.adapter.showErrorMessage('Open a workspace folder before enabling autonomy.');
             return undefined;
         }
 
         const { policy, error } = await this.getPolicy(folder);
         if (!policy) {
-            vscode.window.showErrorMessage(error ?? 'Autonomy policy unavailable. Run "Kiro: Setup Project" first.');
+            this.adapter.showErrorMessage(error ?? 'Autonomy policy unavailable. Run "Kiro: Setup Project" first.');
             return undefined;
         }
 
         const action = policy.actions.find(a => a.id === actionId);
         if (!action) {
-            vscode.window.showErrorMessage(`Autonomy action "${actionId}" is not defined in the manifest.`);
+            this.adapter.showErrorMessage(`Autonomy action "${actionId}" is not defined in the manifest.`);
             return undefined;
         }
 
         if (!action.requiresConsent) {
-            vscode.window.showInformationMessage(
+            this.adapter.showInformationMessage(
                 `${action.description || action.id} does not require consent. Autonomy already enabled.`
             );
             return this.getConsentState(folder, actionId);
@@ -231,7 +238,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
         const existing = this.getConsentState(folder, actionId);
         if (existing) {
             const expiresAt = new Date(existing.expiresAt).toLocaleTimeString();
-            vscode.window.showInformationMessage(
+            this.adapter.showInformationMessage(
                 `Autonomy already enabled for ${action.description || action.id} (expires ${expiresAt}).`
             );
             return existing;
@@ -239,7 +246,7 @@ export class AutonomyPolicyService implements vscode.Disposable {
 
         const phrase = policy.consent.phrase;
         const prompt = `Type the consent phrase (${phrase}) to enable ${action.description || action.id}.`;
-        const userInput = await vscode.window.showInputBox({
+        const userInput = await this.adapter.showInputBox({
             prompt,
             placeHolder: phrase,
             value: '',
@@ -247,18 +254,18 @@ export class AutonomyPolicyService implements vscode.Disposable {
         });
 
         if (!userInput) {
-            vscode.window.showInformationMessage('Consent cancelled.');
+            this.adapter.showInformationMessage('Consent cancelled.');
             return undefined;
         }
 
         if (userInput.trim() !== phrase) {
-            vscode.window.showWarningMessage('Consent phrase mismatch. Autonomy remains disabled.');
+            this.adapter.showWarningMessage('Consent phrase mismatch. Autonomy remains disabled.');
             return undefined;
         }
 
         const consent = await this.grantConsent(folder, actionId, phrase, policy.consent.expiresMinutes);
         const expiresAt = new Date(consent.expiresAt).toLocaleTimeString();
-        vscode.window.showInformationMessage(
+        this.adapter.showInformationMessage(
             `Autonomy enabled for ${action.description || action.id} (expires ${expiresAt}).`
         );
         return consent;
@@ -273,35 +280,35 @@ export class AutonomyPolicyService implements vscode.Disposable {
         );
     }
 
-    private getManifestUri(workspaceFolder: vscode.WorkspaceFolder): vscode.Uri {
-        return vscode.Uri.joinPath(workspaceFolder.uri, '.github', 'prompts', 'autonomy.manifest.json');
+    private getManifestUri(workspaceFolder: WorkspaceFolder): Uri {
+        return this.adapter.joinPath(workspaceFolder.uri, '.github', 'prompts', 'autonomy.manifest.json');
     }
 
-    private getExtensionManifestUri(): vscode.Uri {
-        return vscode.Uri.joinPath(this.extensionContext.extensionUri, 'prompts', 'autonomy.manifest.json');
+    private getExtensionManifestUri(): Uri {
+        return this.adapter.joinPath(this.adapter.getExtensionContext().extensionUri, 'prompts', 'autonomy.manifest.json');
     }
 
-    private getExtensionVersionUri(): vscode.Uri {
-        return vscode.Uri.joinPath(this.extensionContext.extensionUri, 'prompts', 'autonomy-version.json');
+    private getExtensionVersionUri(): Uri {
+        return this.adapter.joinPath(this.adapter.getExtensionContext().extensionUri, 'prompts', 'autonomy-version.json');
     }
 
-    private async restoreManifestFromExtension(workspaceFolder: vscode.WorkspaceFolder): Promise<boolean> {
+    private async restoreManifestFromExtension(workspaceFolder: WorkspaceFolder): Promise<boolean> {
         try {
             const extensionManifestUri = this.getExtensionManifestUri();
             if (!(await this.fileExists(extensionManifestUri))) {
                 return false;
             }
 
-            const promptsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.github', 'prompts');
-            await vscode.workspace.fs.createDirectory(promptsDir);
+            const promptsDir = this.adapter.joinPath(workspaceFolder.uri, '.github', 'prompts');
+            await this.adapter.createDirectory(promptsDir);
 
-            const manifestDestination = vscode.Uri.joinPath(promptsDir, 'autonomy.manifest.json');
-            await vscode.workspace.fs.copy(extensionManifestUri, manifestDestination, { overwrite: true });
+            const manifestDestination = this.adapter.joinPath(promptsDir, 'autonomy.manifest.json');
+            await this.adapter.copy(extensionManifestUri, manifestDestination, { overwrite: true });
 
             const extensionVersionUri = this.getExtensionVersionUri();
             if (await this.fileExists(extensionVersionUri)) {
-                const versionDestination = vscode.Uri.joinPath(promptsDir, 'autonomy-version.json');
-                await vscode.workspace.fs.copy(extensionVersionUri, versionDestination, { overwrite: true });
+                const versionDestination = this.adapter.joinPath(promptsDir, 'autonomy-version.json');
+                await this.adapter.copy(extensionVersionUri, versionDestination, { overwrite: true });
             }
 
             return true;
@@ -311,13 +318,13 @@ export class AutonomyPolicyService implements vscode.Disposable {
         }
     }
 
-    private getWorkspaceKey(workspaceFolder: vscode.WorkspaceFolder): string {
+    private getWorkspaceKey(workspaceFolder: WorkspaceFolder): string {
         return workspaceFolder.uri.toString();
     }
 
-    private async fileExists(uri: vscode.Uri): Promise<boolean> {
+    private async fileExists(uri: Uri): Promise<boolean> {
         try {
-            await vscode.workspace.fs.stat(uri);
+            await this.adapter.stat(uri);
             return true;
         } catch {
             return false;
@@ -375,17 +382,16 @@ export class AutonomyPolicyService implements vscode.Disposable {
         };
     }
 
-    private ensureWatcher(workspaceFolder: vscode.WorkspaceFolder): void {
+    private ensureWatcher(workspaceFolder: WorkspaceFolder): void {
         const cacheKey = this.getWorkspaceKey(workspaceFolder);
         if (this.watchers.has(cacheKey)) {
             return;
         }
 
-        const pattern = new vscode.RelativePattern(
+        const watcher = this.adapter.createRelativePatternWatcher(
             workspaceFolder,
             AutonomyPolicyService.MANIFEST_RELATIVE_PATH
         );
-        const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
         const handleChange = () => {
             this.cache.delete(cacheKey);
@@ -400,6 +406,6 @@ export class AutonomyPolicyService implements vscode.Disposable {
         }, undefined, this.extensionContext.subscriptions);
 
         this.watchers.set(cacheKey, watcher);
-        this.extensionContext.subscriptions.push(watcher);
+        this.extensionContext.subscriptions.push(watcher as vscode.Disposable);
     }
 }

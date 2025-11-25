@@ -1,11 +1,18 @@
 import * as vscode from 'vscode';
 import { ModeManager, CodingMode } from '../services/modeManager';
+import { IPlatformAdapter, EventEmitter } from '../adapters';
 
 export class ModeSelectorProvider implements vscode.TreeDataProvider<ModeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<ModeItem | undefined | null | void> = new vscode.EventEmitter<ModeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<ModeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+    private _onDidChangeTreeData: EventEmitter<ModeItem | undefined | null | void>;
+    readonly onDidChangeTreeData: vscode.Event<ModeItem | undefined | null | void>;
 
-    constructor(private modeManager: ModeManager) {}
+    constructor(
+        private modeManager: ModeManager,
+        private adapter: IPlatformAdapter
+    ) {
+        this._onDidChangeTreeData = this.adapter.createEventEmitter<ModeItem | undefined | null | void>();
+        this.onDidChangeTreeData = this._onDidChangeTreeData.event;
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();

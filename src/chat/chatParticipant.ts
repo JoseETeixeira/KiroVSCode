@@ -1,39 +1,91 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
 import { ModeManager } from '../services/modeManager';
 import { PromptManager } from '../services/promptManager';
 import { SetupService } from '../services/setupService';
+import {
+    IPlatformAdapter,
+    Disposable,
+    ChatRequest,
+    ChatContext,
+    ChatResponseStream,
+    CancellationToken,
+    Uri,
+    WorkspaceFolder
+} from '../adapters';
 
+/**
+ * Chat participant for the Kiro extension.
+ * 
+ * This class handles the @Kiro chat participant, responding to user messages
+ * and slash commands in the IDE's chat interface. It uses the platform adapter
+ * for all IDE interactions, enabling cross-platform support.
+ * 
+ * Supported slash commands:
+ * - /vibe - Switch to Vibe Coding mode
+ * - /spec - Switch to Spec mode
+ * - /task - Start working on a task from tasks.md
+ * 
+ * @example
+ * ```typescript
+ * const chatParticipant = new ChatParticipant(
+ *     adapter,
+ *     modeManager,
+ *     promptManager,
+ *     setupService
+ * );
+ * const disposable = chatParticipant.register();
+ * ```
+ */
 export class ChatParticipant {
 
+    /**
+     * Creates a new ChatParticipant instance.
+     * 
+     * @param adapter The platform adapter for IDE interactions
+     * @param modeManager The mode manager for switching between vibe and spec modes
+     * @param promptManager The prompt manager for loading mode-specific prompts
+     * @param setupService The setup service for copying prompt templates
+     */
     constructor(
-        private modeManager: ModeManager,
-        private promptManager: PromptManager,
-        private extensionContext: vscode.ExtensionContext,
-        private setupService: SetupService
+        private readonly adapter: IPlatformAdapter,
+        private readonly modeManager: ModeManager,
+        private readonly promptManager: PromptManager,
+        private readonly setupService: SetupService
     ) {}
 
-    register(): vscode.Disposable {
-        const participant = vscode.chat.createChatParticipant(
+    /**
+     * Register the chat participant with the IDE.
+     * 
+     * @returns A disposable that unregisters the participant when disposed
+     */
+    register(): Disposable {
+        const participant = this.adapter.createChatParticipant(
             'kiro-copilot.assistant',
             this.handleChatRequest.bind(this)
         );
 
-        // Set metadata
-        const iconUri = vscode.Uri.joinPath(this.extensionContext.extensionUri, 'resources', 'kiro-icon.svg');
-        participant.iconPath = iconUri;
+        // Set icon using adapter's URI methods
+        const extensionContext = this.adapter.getExtensionContext();
+        if (extensionContext && extensionContext.extensionUri) {
+            const iconUri = this.adapter.joinPath(
+                extensionContext.extensionUri,
+                'resources',
+                'kiro-icon.svg'
+            );
+            participant.iconPath = iconUri;
+        }
 
         return participant;
     }
 
     /**
-     * Main chat request handler - routes to slash commands or mode-specific chat
+     * Main chat request handler - routes to slash commands or mode-specific chat.
      */
     private async handleChatRequest(
-        request: vscode.ChatRequest,
-        context: vscode.ChatContext,
-        stream: vscode.ChatResponseStream,
-        token: vscode.CancellationToken
+        request: ChatRequest,
+        context: ChatContext,
+        stream: ChatResponseStream,
+        token: CancellationToken
     ): Promise<void> {
         // Handle explicit slash commands first
         if (request.command) {
@@ -46,13 +98,15 @@ export class ChatParticipant {
     }
 
     /**
-     * Handle slash commands (/vibe, /spec, /task)
+     * Handle slash commands (/vibe, /spec, /task).
      */
     private async handleSlashCommand(
-        request: vscode.ChatRequest,
-        stream: vscode.ChatResponseStream,
-        token?: vscode.CancellationToken // eslint-disable-line @typescript-eslint/no-unused-vars
+        request: ChatRequest,
+        stream: ChatResponseStream,
+        _token: CancellationToken
     ): Promise<void> {
+        void _token; // Explicitly mark as intentionally unused
+        
         switch (request.command) {
             case 'vibe':
                 await this.switchToVibeMode(stream);
@@ -69,9 +123,9 @@ export class ChatParticipant {
     }
 
     /**
-     * Switch to Vibe Coding mode
+     * Switch to Vibe Coding mode.
      */
-    private async switchToVibeMode(stream: vscode.ChatResponseStream): Promise<void> {
+    private async switchToVibeMode(stream: ChatResponseStream): Promise<void> {
         await this.modeManager.setMode('vibe');
         stream.markdown('Switched to **Vibe Coding** mode 🎯\n\n');
         stream.markdown('*Chat first, then build. Explore ideas and iterate as you discover needs.*\n\n');
@@ -82,9 +136,9 @@ export class ChatParticipant {
     }
 
     /**
-     * Switch to Spec mode
+     * Switch to Spec mode.
      */
-    private async switchToSpecMode(stream: vscode.ChatResponseStream): Promise<void> {
+    private async switchToSpecMode(stream: ChatResponseStream): Promise<void> {
         await this.modeManager.setMode('spec');
         stream.markdown('Switched to **Spec** mode 📋\n\n');
         stream.markdown('*Plan first, then build. Create requirements and design before coding starts.*\n\n');
@@ -95,20 +149,24 @@ export class ChatParticipant {
     }
 
     /**
-     * Handle mode-specific chat - sets up MCP and delegates to Copilot
+     * Handle mode-specific chat - sets up context and provides guidance.
      */
     private async handleModeSpecificChat(
-        request: vscode.ChatRequest,
-        context: vscode.ChatContext, // eslint-disable-line @typescript-eslint/no-unused-vars
-        stream: vscode.ChatResponseStream,
-        token: vscode.CancellationToken // eslint-disable-line @typescript-eslint/no-unused-vars
+        request: ChatRequest,
+        _context: ChatContext,
+        stream: ChatResponseStream,
+        _token: CancellationToken
     ): Promise<void> {
+        void _context; // Explicitly mark as intentionally unused
+        void _token; // Explicitly mark as intentionally unused
+
         const mode = this.modeManager.getCurrentMode();
         const modeLabel = mode === 'vibe' ? 'Vibe Coding 🎯' : 'Spec 📋';
 
         stream.markdown(`*${modeLabel} mode active*\n\n`);
 
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolders = this.adapter.getWorkspaceFolders();
+        const workspaceFolder = workspaceFolders?.[0];
         if (!workspaceFolder) {
             stream.markdown('⚠️ No workspace folder open. Please open a workspace to use Kiro.\n');
             return;
@@ -116,7 +174,7 @@ export class ChatParticipant {
 
         const promptFileName = mode === 'spec' ? 'requirements.prompt.md' : 'executeTask.prompt.md';
         const promptFilePath = path.join(workspaceFolder.uri.fsPath, '.github', 'prompts', promptFileName);
-        const promptUri = vscode.Uri.file(promptFilePath);
+        const promptUri = this.adapter.createFileUri(promptFilePath);
         const relativePromptPath = path.relative(workspaceFolder.uri.fsPath, promptFilePath);
 
         const promptReady = await this.ensurePromptFile(promptUri, workspaceFolder, stream);
@@ -141,13 +199,15 @@ export class ChatParticipant {
     }
 
     /**
-     * Handle the /task command
+     * Handle the /task command.
      */
     private async handleTaskCommand(
-        request: vscode.ChatRequest,
-        stream: vscode.ChatResponseStream
+        request: ChatRequest,
+        stream: ChatResponseStream
     ): Promise<void> {
-        const editor = vscode.window.activeTextEditor;
+        void request; // Explicitly mark as intentionally unused
+
+        const editor = this.adapter.getActiveTextEditor();
 
         if (!editor || !editor.document.fileName.endsWith('tasks.md')) {
             stream.markdown('⚠️ Please open a `tasks.md` file to use the task command.\n');
@@ -177,13 +237,21 @@ export class ChatParticipant {
         }
     }
 
+    /**
+     * Ensure the prompt file exists, copying templates if necessary.
+     * 
+     * @param promptUri The URI of the prompt file
+     * @param workspaceFolder The workspace folder to copy templates to
+     * @param stream The response stream for status messages
+     * @returns true if the prompt file is available
+     */
     private async ensurePromptFile(
-        promptUri: vscode.Uri,
-        workspaceFolder: vscode.WorkspaceFolder,
-        stream: vscode.ChatResponseStream
+        promptUri: Uri,
+        workspaceFolder: WorkspaceFolder,
+        stream: ChatResponseStream
     ): Promise<boolean> {
         try {
-            await vscode.workspace.fs.stat(promptUri);
+            await this.adapter.stat(promptUri);
             return true;
         } catch {
             stream.markdown('📝 Prompt file missing. Syncing templates...\n');
@@ -195,7 +263,7 @@ export class ChatParticipant {
         }
 
         try {
-            await vscode.workspace.fs.stat(promptUri);
+            await this.adapter.stat(promptUri);
             return true;
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

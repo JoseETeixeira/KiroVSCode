@@ -7,27 +7,72 @@ import { ModeManager } from './services/modeManager';
 import { SetupService } from './services/setupService';
 import { AutonomyPolicyService } from './services/autonomyPolicyService';
 import { IntentService } from './services/intentService';
+import { AdapterFactory, IPlatformAdapter } from './adapters';
 
-export function activate(context: vscode.ExtensionContext) {
+// Module-level adapter reference for use throughout the extension
+let platformAdapter: IPlatformAdapter | undefined;
+
+export async function activate(context: vscode.ExtensionContext) {
     console.log('Kiro-Style Copilot extension is now active');
 
-    // Initialize services
-    const modeManager = new ModeManager(context);
-    const promptManager = new PromptManager(context);
-    const setupService = new SetupService(context);
-    const autonomyPolicyService = new AutonomyPolicyService(context);
-    const intentService = new IntentService(context, autonomyPolicyService);
+    // ========================================================================
+    // Platform Adapter Initialization
+    // ========================================================================
+    
+    try {
+        // Initialize the platform adapter (auto-detects VS Code or Antigravity)
+        platformAdapter = await AdapterFactory.getAdapter(context as unknown as import('./adapters').ExtensionContext);
+        
+        // Log platform detection results
+        console.log(`[Kiro] Platform detected: ${platformAdapter.platformName} v${platformAdapter.version}`);
+        
+        const detectionResult = AdapterFactory.getDetectionResult();
+        if (detectionResult) {
+            console.log(`[Kiro] Detection time: ${detectionResult.detectionTimeMs.toFixed(2)}ms`);
+            if (detectionResult.details.warningMessage) {
+                console.warn(`[Kiro] ${detectionResult.details.warningMessage}`);
+            }
+        }
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error('[Kiro] Failed to initialize platform adapter:', errorMessage);
+        
+        // Show user-facing error message
+        // Note: We use vscode directly here because the adapter initialization failed.
+        // This is a fallback scenario - if we can't initialize the adapter, we can't use it.
+        vscode.window.showErrorMessage(
+            `Kiro extension failed to initialize: ${errorMessage}. ` +
+            'Please check the console for details.'
+        );
+        
+        // Cannot continue without adapter
+        return;
+    }
 
-    context.subscriptions.push(autonomyPolicyService, intentService);
+    // Use the adapter reference for all platform operations
+    const adapter = platformAdapter;
+
+    // Initialize services
+    // ModeManager, PromptManager, SetupService, AutonomyPolicyService, and IntentService now use IPlatformAdapter
+    // Other services will be refactored in later tasks to accept IPlatformAdapter
+    const modeManager = new ModeManager(adapter);
+    const promptManager = new PromptManager(adapter);
+    const setupService = new SetupService(adapter);
+    const autonomyPolicyService = new AutonomyPolicyService(context, adapter);
+    const intentService = new IntentService(context, autonomyPolicyService, adapter);
+
+    context.subscriptions.push(autonomyPolicyService, intentService, promptManager);
 
     // Register mode selector view
-    const modeSelectorProvider = new ModeSelectorProvider(modeManager);
+    // Note: Tree data providers still use vscode types for tree items but use adapter for events
+    const modeSelectorProvider = new ModeSelectorProvider(modeManager, adapter);
     context.subscriptions.push(
         vscode.window.registerTreeDataProvider('kiro-copilot.modeSelector', modeSelectorProvider)
     );
 
     // Register task context provider
     const taskContextProvider = new TaskContextProvider(
+        adapter,
         promptManager,
         modeManager,
         intentService,
@@ -40,30 +85,30 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Watch for active editor changes to update task context
     context.subscriptions.push(
-        vscode.window.onDidChangeActiveTextEditor(() => {
+        adapter.onDidChangeActiveTextEditor(() => {
             taskContextProvider.refresh();
         })
     );
 
-    // Register commands
+    // Register commands using adapter
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.switchToVibeMode', async () => {
+        adapter.registerCommand('kiro-copilot.switchToVibeMode', async () => {
             await modeManager.setMode('vibe');
-            vscode.window.showInformationMessage('🎯 Switched to Vibe Coding mode - Chat first, then build!');
+            await adapter.showInformationMessage('🎯 Switched to Vibe Coding mode - Chat first, then build!');
             modeSelectorProvider.refresh();
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.switchToSpecMode', async () => {
+        adapter.registerCommand('kiro-copilot.switchToSpecMode', async () => {
             await modeManager.setMode('spec');
-            vscode.window.showInformationMessage('📋 Switched to Spec mode - Plan first, then build!');
+            await adapter.showInformationMessage('📋 Switched to Spec mode - Plan first, then build!');
             modeSelectorProvider.refresh();
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.openModeSelector', async () => {
+        adapter.registerCommand('kiro-copilot.openModeSelector', async () => {
             const modes = [
                 {
                     label: '$(rocket) Vibe Coding',
@@ -77,13 +122,13 @@ export function activate(context: vscode.ExtensionContext) {
                 }
             ];
 
-            const selected = await vscode.window.showQuickPick(modes, {
+            const selected = await adapter.showQuickPick(modes, {
                 placeHolder: 'Select your coding mode'
             });
 
             if (selected) {
                 await modeManager.setMode(selected.mode);
-                vscode.window.showInformationMessage(
+                await adapter.showInformationMessage(
                     `Switched to ${selected.mode === 'vibe' ? 'Vibe Coding' : 'Spec'} mode`
                 );
                 modeSelectorProvider.refresh();
@@ -92,14 +137,15 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.startTaskFromFile', async (taskItem) => {
+        adapter.registerCommand('kiro-copilot.startTaskFromFile', async (taskItem) => {
             if (!taskItem) {
-                vscode.window.showWarningMessage('No task selected');
+                await adapter.showWarningMessage('No task selected');
                 return;
             }
 
             // Build context message with task details, steering, and spec files
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            const workspaceFolders = adapter.getWorkspaceFolders();
+            const workspaceFolder = workspaceFolders?.[0];
             if (!workspaceFolder) {
                 return;
             }
@@ -125,13 +171,13 @@ export function activate(context: vscode.ExtensionContext) {
 
             contextMessage += `\nThen implement this task following the executeTask workflow.`;
 
-            const inserted = await prefillChatInput(contextMessage);
+            const inserted = await prefillChatInput(contextMessage, adapter);
 
             if (inserted) {
-                vscode.window.showInformationMessage('Chat input prepared. Review and send when you are ready.');
+                await adapter.showInformationMessage('Chat input prepared. Review and send when you are ready.');
             } else {
-                await vscode.env.clipboard.writeText(contextMessage);
-                vscode.window.showWarningMessage(
+                await adapter.writeToClipboard(contextMessage);
+                await adapter.showWarningMessage(
                     'Unable to prefill the chat input automatically. The message has been copied to your clipboard instead.'
                 );
             }
@@ -139,44 +185,45 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.deleteSpec', async (treeItem) => {
+        adapter.registerCommand('kiro-copilot.deleteSpec', async (treeItem) => {
             await taskContextProvider.handleDeleteSpecCommand(treeItem as any);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.executeNextAutonomously', async (treeItem) => {
+        adapter.registerCommand('kiro-copilot.executeNextAutonomously', async (treeItem) => {
             await taskContextProvider.handleExecuteNextAutonomyCommand(treeItem as any);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.retryAutonomously', async (treeItem) => {
+        adapter.registerCommand('kiro-copilot.retryAutonomously', async (treeItem) => {
             await taskContextProvider.handleRetryAutonomyCommand(treeItem as any);
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.enableAutonomy', async () => {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        adapter.registerCommand('kiro-copilot.enableAutonomy', async () => {
+            const workspaceFolders = adapter.getWorkspaceFolders();
+            const workspaceFolder = workspaceFolders?.[0];
             if (!workspaceFolder) {
-                vscode.window.showErrorMessage('Open a workspace folder before enabling autonomy.');
+                await adapter.showErrorMessage('Open a workspace folder before enabling autonomy.');
                 return;
             }
 
-            const { policy, error } = await autonomyPolicyService.getPolicy(workspaceFolder);
+            const { policy, error } = await autonomyPolicyService.getPolicy(workspaceFolder as unknown as vscode.WorkspaceFolder);
             if (!policy) {
-                vscode.window.showErrorMessage(error ?? 'Autonomy policy unavailable. Run "Kiro: Setup Project" first.');
+                await adapter.showErrorMessage(error ?? 'Autonomy policy unavailable. Run "Kiro: Setup Project" first.');
                 return;
             }
 
             const consentActions = policy.actions.filter(action => action.requiresConsent);
             if (consentActions.length === 0) {
-                vscode.window.showInformationMessage('No consent-required autonomy actions are defined in the manifest.');
+                await adapter.showInformationMessage('No consent-required autonomy actions are defined in the manifest.');
                 return;
             }
 
-            const pick = await vscode.window.showQuickPick(
+            const pick = await adapter.showQuickPick(
                 consentActions.map(action => ({
                     label: action.description || action.id,
                     description: action.id,
@@ -191,34 +238,38 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            await autonomyPolicyService.requestConsent(pick.action.id, workspaceFolder);
+            await autonomyPolicyService.requestConsent(pick.action.id, workspaceFolder as unknown as vscode.WorkspaceFolder);
             taskContextProvider.refresh();
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.refreshModeSelector', () => {
+        adapter.registerCommand('kiro-copilot.refreshModeSelector', () => {
             modeSelectorProvider.refresh();
         })
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.refreshTaskContext', () => {
+        adapter.registerCommand('kiro-copilot.refreshTaskContext', () => {
             taskContextProvider.refresh();
         })
     );
 
     // Register setup project command
+    // Note: withProgress is VS Code-specific and will be abstracted in a future update
     context.subscriptions.push(
-        vscode.commands.registerCommand('kiro-copilot.setupProject', async () => {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        adapter.registerCommand('kiro-copilot.setupProject', async () => {
+            const workspaceFolders = adapter.getWorkspaceFolders();
+            const workspaceFolder = workspaceFolders?.[0];
             if (!workspaceFolder) {
-                vscode.window.showErrorMessage('No workspace folder open. Please open a workspace.');
+                await adapter.showErrorMessage('No workspace folder open. Please open a workspace.');
                 return;
             }
 
             const workspacePath = workspaceFolder.uri.fsPath;
 
+            // Note: vscode.window.withProgress is VS Code-specific
+            // For now, we use it directly; will be abstracted if needed for Antigravity
             await vscode.window.withProgress(
                 {
                     location: vscode.ProgressLocation.Notification,
@@ -229,29 +280,30 @@ export function activate(context: vscode.ExtensionContext) {
                     progress.report({ message: 'Syncing prompt files...' });
                     const promptResult = await setupService.copyPromptFiles(workspacePath);
                     if (promptResult.success) {
-                        vscode.window.showInformationMessage(promptResult.message);
+                        await adapter.showInformationMessage(promptResult.message);
                     } else {
-                        vscode.window.showWarningMessage(promptResult.message);
+                        await adapter.showWarningMessage(promptResult.message);
                     }
 
                     const chatApiResult = setupService.ensureChatApiSetting(workspacePath);
                     if (!chatApiResult.success && chatApiResult.message) {
-                        vscode.window.showWarningMessage(chatApiResult.message);
+                        await adapter.showWarningMessage(chatApiResult.message);
                     } else if (chatApiResult.updated) {
-                        vscode.window.showInformationMessage('Enabled experimental chat API for Kiro prompts.');
+                        await adapter.showInformationMessage('Enabled experimental chat API for Kiro prompts.');
                     }
 
-                    vscode.window.showInformationMessage('✓ Kiro setup complete! Prompt templates are synced.');
+                    await adapter.showInformationMessage('✓ Kiro setup complete! Prompt templates are synced.');
                 }
             );
         })
     );
 
     // Register chat participant
+    // ChatParticipant now uses IPlatformAdapter (refactored in Task 9)
     const chatParticipant = new ChatParticipant(
+        adapter,
         modeManager,
         promptManager,
-        context,
         setupService
     );
     context.subscriptions.push(chatParticipant.register());
@@ -259,12 +311,12 @@ export function activate(context: vscode.ExtensionContext) {
     // Show welcome message on first activation
     const hasShownWelcome = context.globalState.get('hasShownWelcome', false);
     if (!hasShownWelcome) {
-        vscode.window.showInformationMessage(
+        adapter.showInformationMessage(
             'Welcome to Kiro-Style Copilot! Choose your coding mode to get started.',
             'Select Mode'
         ).then(selection => {
             if (selection === 'Select Mode') {
-                vscode.commands.executeCommand('kiro-copilot.openModeSelector');
+                adapter.executeCommand('kiro-copilot.openModeSelector');
             }
         });
         context.globalState.update('hasShownWelcome', true);
@@ -273,11 +325,19 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
-async function prefillChatInput(message: string): Promise<boolean> {
+/**
+ * Attempts to prefill the chat input with a message.
+ * Uses the platform adapter for command execution.
+ * 
+ * @param message The message to prefill
+ * @param adapter The platform adapter to use for command execution
+ * @returns true if successful, false otherwise
+ */
+async function prefillChatInput(message: string, adapter: IPlatformAdapter): Promise<boolean> {
     try {
-        await vscode.commands.executeCommand('workbench.action.chat.open');
+        await adapter.executeCommand('workbench.action.chat.open');
         await delay(100);
-        await vscode.commands.executeCommand('type', { text: message });
+        await adapter.executeCommand('type', { text: message });
         return true;
     } catch (error) {
         console.warn('[Kiro] Unable to prefill chat input.', error);

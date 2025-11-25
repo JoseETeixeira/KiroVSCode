@@ -1,7 +1,7 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { copyDirectorySkippingExisting, CopyStats, createCopyStats } from './promptCopyUtils';
+import { IPlatformAdapter } from '../adapters';
 
 interface PromptCopyDetails {
     prompts: CopyStats;
@@ -20,7 +20,14 @@ interface AutonomyCopyDetails {
 }
 
 export class SetupService {
-    constructor(private extensionContext: vscode.ExtensionContext) {}
+    constructor(private adapter: IPlatformAdapter) {}
+
+    /**
+     * Get the extension path from the adapter's extension context
+     */
+    private get extensionPath(): string {
+        return this.adapter.getExtensionContext().extensionPath;
+    }
 
     /**
      * Check if prompt files are already set up
@@ -46,7 +53,7 @@ export class SetupService {
     async copyPromptFiles(
         workspacePath: string
     ): Promise<{ success: boolean; message: string; details?: PromptCopyDetails }> {
-        const extensionPromptsPath = path.join(this.extensionContext.extensionPath, 'prompts');
+        const extensionPromptsPath = path.join(this.extensionPath, 'prompts');
         const githubRoot = path.join(workspacePath, '.github');
         const githubInstructionsPath = path.join(githubRoot, 'instructions');
         const githubPromptsPath = path.join(githubRoot, 'prompts');

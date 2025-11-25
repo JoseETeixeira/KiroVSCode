@@ -1,0 +1,3 @@
+{"stage":"queued","message":"Preparing executeTask prompt.","timestamp":"2025-11-17T16:39:05.307Z","details":{"actionId":"executeTask.next"},"tool":"kiro_execute_task"}
+{"stage":"running","message":"Invoking Copilot LLM with executeTask template.","timestamp":"2025-11-17T16:39:05.308Z","details":{"actionId":"executeTask.next"},"tool":"kiro_execute_task"}
+{"stage":"failed","message":"executeTask failed.","timestamp":"2025-11-17T16:39:05.312Z","details":{"errorType":"LLMInvocationError","message":"Missing KIRO_LLM_TOKEN or COPILOT_API_KEY environment variable for LLM invocation.","actionId":"executeTask.next"},"tool":"kiro_execute_task"}

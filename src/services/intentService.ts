@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { TextDecoder } from 'util';
 import { AutonomyPolicyService, AutonomyAction, ConsentState } from './autonomyPolicyService';
+import { IPlatformAdapter, EventEmitter, FileSystemWatcher, WorkspaceFolder, Uri } from '../adapters';
 
 export type IntentActivationSource = 'taskTree' | 'slashCommand' | 'button';
 
@@ -12,7 +13,7 @@ export interface IntentDispatchOptions {
     taskId?: number;
     taskLabel?: string;
     instructionsVersion?: string;
-    workspaceFolder?: vscode.WorkspaceFolder;
+    workspaceFolder?: WorkspaceFolder;
     metadata?: Record<string, unknown>;
 }
 
@@ -41,7 +42,7 @@ export type IntentStage =
     | 'completed';
 
 export interface IntentStatusEvent {
-    workspaceFolder: vscode.WorkspaceFolder;
+    workspaceFolder: WorkspaceFolder;
     actionId: string;
     stage: IntentStage;
     message: string;
@@ -54,16 +55,19 @@ export interface IntentStatusEvent {
 }
 
 export class IntentService implements vscode.Disposable {
-    private readonly statusEmitter = new vscode.EventEmitter<IntentStatusEvent>();
-    readonly onDidChangeStatus = this.statusEmitter.event;
-    private runtimeWatcher?: vscode.FileSystemWatcher;
+    private readonly statusEmitter: EventEmitter<IntentStatusEvent>;
+    readonly onDidChangeStatus: vscode.Event<IntentStatusEvent>;
+    private runtimeWatcher?: FileSystemWatcher;
     private processedRuntimeKeys: Set<string> = new Set();
     private readonly decoder = new TextDecoder('utf-8');
 
     constructor(
         private readonly extensionContext: vscode.ExtensionContext,
-        private readonly autonomyPolicyService: AutonomyPolicyService
+        private readonly autonomyPolicyService: AutonomyPolicyService,
+        private readonly adapter: IPlatformAdapter
     ) {
+        this.statusEmitter = this.adapter.createEventEmitter<IntentStatusEvent>();
+        this.onDidChangeStatus = this.statusEmitter.event;
         this.initializeRuntimeWatcher();
     }
 
@@ -73,21 +77,21 @@ export class IntentService implements vscode.Disposable {
     }
 
     async dispatchIntent(options: IntentDispatchOptions): Promise<void> {
-        const workspaceFolder = options.workspaceFolder ?? vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = options.workspaceFolder ?? this.adapter.getWorkspaceFolders()?.[0];
         if (!workspaceFolder) {
-            vscode.window.showErrorMessage('No workspace folder is open. Unable to dispatch intent.');
+            this.adapter.showErrorMessage('No workspace folder is open. Unable to dispatch intent.');
             return;
         }
 
         const disabledMessage = 'Autonomous intents are disabled. Use the prompt templates under .github/prompts to run workflows manually.';
         this.emitStatus(workspaceFolder, options.actionId, 'cancelled', disabledMessage);
-        vscode.window.showWarningMessage(disabledMessage);
+        this.adapter.showWarningMessage(disabledMessage);
         return;
 
     }
 
-    async revokeConsent(workspaceFolder?: vscode.WorkspaceFolder, actionId?: string): Promise<void> {
-        const folder = workspaceFolder ?? vscode.workspace.workspaceFolders?.[0];
+    async revokeConsent(workspaceFolder?: WorkspaceFolder, actionId?: string): Promise<void> {
+        const folder = workspaceFolder ?? this.adapter.getWorkspaceFolders()?.[0];
         if (!folder) {
             return;
         }
@@ -95,7 +99,7 @@ export class IntentService implements vscode.Disposable {
     }
 
     private async ensureConsent(
-        workspaceFolder: vscode.WorkspaceFolder,
+        workspaceFolder: WorkspaceFolder,
         action: AutonomyAction,
         policy: { version: string; consent: { phrase: string; expiresMinutes: number } }
     ): Promise<ConsentState | undefined> {
@@ -115,17 +119,17 @@ export class IntentService implements vscode.Disposable {
             `Consent phrase "${policy.consent.phrase}" required for ${action.description || action.id}.`
         );
 
-        const userInput = await vscode.window.showInputBox({
+        const userInput = await this.adapter.showInputBox({
             prompt: `Type the consent phrase to allow "${action.description || action.id}" to run autonomously.`
         });
 
         if (!userInput) {
-            vscode.window.showInformationMessage('Consent cancelled. Intent will not be dispatched.');
+            this.adapter.showInformationMessage('Consent cancelled. Intent will not be dispatched.');
             return undefined;
         }
 
         if (userInput.trim() !== policy.consent.phrase) {
-            vscode.window.showWarningMessage('Consent phrase mismatch. Intent cancelled.');
+            this.adapter.showWarningMessage('Consent phrase mismatch. Intent cancelled.');
             return undefined;
         }
 
@@ -181,7 +185,7 @@ export class IntentService implements vscode.Disposable {
             }
         }
 
-        await vscode.commands.executeCommand('workbench.action.chat.open', {
+        await this.adapter.executeCommand('workbench.action.chat.open', {
             query: `@kiro ${slashCommand}`
         });
     }
@@ -197,7 +201,7 @@ export class IntentService implements vscode.Disposable {
     }
 
     private emitStatus(
-        workspaceFolder: vscode.WorkspaceFolder,
+        workspaceFolder: WorkspaceFolder,
         actionId: string,
         stage: IntentStage,
         message: string,
@@ -219,15 +223,18 @@ export class IntentService implements vscode.Disposable {
     }
 
     private initializeRuntimeWatcher(): void {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = this.adapter.getWorkspaceFolders()?.[0];
         if (!workspaceFolder) {
             return;
         }
 
-        const runtimeDir = vscode.Uri.joinPath(workspaceFolder.uri, '.kiro', 'runtime');
-        const pattern = new vscode.RelativePattern(runtimeDir, 'intent-status.jsonl');
-        this.runtimeWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-        this.extensionContext.subscriptions.push(this.runtimeWatcher);
+        const runtimeDir = this.adapter.joinPath(workspaceFolder.uri, '.kiro', 'runtime');
+        // Watch for intent-status.jsonl files in the runtime directory
+        this.runtimeWatcher = this.adapter.createRelativePatternWatcher(
+            workspaceFolder,
+            '.kiro/runtime/intent-status.jsonl'
+        );
+        this.extensionContext.subscriptions.push(this.runtimeWatcher as vscode.Disposable);
 
         const refresh = () => {
             void this.readRuntimeStatuses(workspaceFolder, runtimeDir);
@@ -241,12 +248,12 @@ export class IntentService implements vscode.Disposable {
     }
 
     private async readRuntimeStatuses(
-        workspaceFolder: vscode.WorkspaceFolder,
-        runtimeDir: vscode.Uri
+        workspaceFolder: WorkspaceFolder,
+        runtimeDir: Uri
     ): Promise<void> {
-        const fileUri = vscode.Uri.joinPath(runtimeDir, 'intent-status.jsonl');
+        const fileUri = this.adapter.joinPath(runtimeDir, 'intent-status.jsonl');
         try {
-            const raw = await vscode.workspace.fs.readFile(fileUri);
+            const raw = await this.adapter.readFile(fileUri);
             const content = this.decoder.decode(raw);
             const lines = content.split(/\r?\n/).filter(line => line.trim().length > 0);
             for (const line of lines) {
@@ -277,7 +284,7 @@ export class IntentService implements vscode.Disposable {
     }
 
     private emitRuntimeStatus(
-        workspaceFolder: vscode.WorkspaceFolder,
+        workspaceFolder: WorkspaceFolder,
         payload: RuntimeStatusPayload
     ): void {
         const stage = this.mapRuntimeStage(payload.stage);

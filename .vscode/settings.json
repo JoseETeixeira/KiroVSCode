@@ -59,8 +59,7 @@
   "chat.mcp.serverSampling": {
     "VSCodeExtension/.vscode/mcp.json: kiro": {
       "allowedModels": [
-        "copilot/claude-sonnet-4.5",
-        "copilot/gpt-5.1-codex"
+        "openai/gpt-5"
       ]
     }
   },
